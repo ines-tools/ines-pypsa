@@ -7,8 +7,8 @@ import json
 #ines = ARGS[1] # use template to verify valid fields?
 #map = ARGS[2] # use map to make a general structure like the exporters?
 ARGS = sys.argv[1:]
-input = ARGS[1]
-output = ARGS[2]
+input = ARGS[0]
+output = ARGS[1]
 
 with open(input) as f:
     pypsadict = json.load(f)
