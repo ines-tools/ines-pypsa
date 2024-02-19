@@ -38,11 +38,11 @@ def map_node(iodb,entities,parameters):
 	entityname = entities[1]
 	parameter = parameters[1]
 	iodb["Bus"].get(entityname,{})
-	iodb["Load"] = iodb["Load"].get("load "*entityname, {}) | {
+	iodb["Load"] = iodb["Load"].get("load "+entityname, {}) | {
 		"bus" : entityname,
 		"p_set" : parameter["demand_profile"]
 	}
-	iodb["Generator"] = iodb["Generator"].get("generator "*entityname, {}) | {
+	iodb["Generator"] = iodb["Generator"].get("generator "+entityname, {}) | {
 		"bus" : entityname,
 		"marginal_cost" : parameter["commodity_price"],
 		"p_nom" : parameter["upper_limit"]
