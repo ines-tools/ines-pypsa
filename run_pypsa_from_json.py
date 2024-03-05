@@ -29,6 +29,6 @@ for objectclass, objects in networkdict.items():
 
 network.optimize()
 
-with open(outputpath, "a") as f:
+with open(outputpath, "w") as f:
     print(network.links_t.p0, file=f)
     print(network.generators_t.p, file=f)
