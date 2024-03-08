@@ -13,9 +13,12 @@ def map_postprocess(iodb):
 	#filter out None values
 	for (entitytype,entities) in iodb.items():
 		for (entityname,entitityattributes) in entities.items():
+			deleteitems = []
 			for (attribute,value) in entitityattributes.items():
 				if value == None:
-					iodb[entitytype][entityname].pop(attribute)
+					deleteitems.append((entitytype,entityname,attribute))
+	for (entitytype,entityname,attribute) in deleteitems:
+		iodb[entitytype][entityname].pop(attribute)
 	return
 
 # Function map for entity classes; specific to the generic structure
@@ -93,7 +96,7 @@ def map_node__to_unit(iodb,entities,parameters):
 	iodb["Link"][entityname].update({
 		"efficiency" : parameter["conversion_coefficient"],
 		"marginal_cost" : parameter["other_operational_cost"],
-		"p_nom" : parameter["capacity_per_unit"]
+		"p_nom" : parameter["capacity"]
 	})
 	return
 
@@ -122,7 +125,7 @@ def map_unit__to_node(iodb,entities,parameters):
 	iodb["Link"][entityname].update({
 		"bus1" : busname,
 		"marginal_cost" : parameter["other_operational_cost"],
-		"p_nom" : parameter["capacity_per_unit"]
+		"p_nom" : parameter["capacity"]
 	})
 	return
 
