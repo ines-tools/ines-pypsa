@@ -11,13 +11,13 @@ def map_preprocess(iodb):
 
 def map_postprocess(iodb):
 	#filter out None values
+	delete_items = []
 	for (entitytype,entities) in iodb.items():
 		for (entityname,entitityattributes) in entities.items():
-			deleteitems = []
 			for (attribute,value) in entitityattributes.items():
 				if value == None:
-					deleteitems.append((entitytype,entityname,attribute))
-	for (entitytype,entityname,attribute) in deleteitems:
+					delete_items.append((entitytype,entityname,attribute))
+	for (entitytype,entityname,attribute) in delete_items:
 		iodb[entitytype][entityname].pop(attribute)
 	return
 
