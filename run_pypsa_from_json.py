@@ -35,6 +35,7 @@ network.optimize()
 t1 = time.time()
 
 outputdata = {
+    "tool" : "PyPSA",
     "time" : t1-t0,
     "objective" : network.objective,
 }
