@@ -4,6 +4,7 @@
 # print results to json
 
 import sys
+import time
 from pathlib import Path
 import json
 import pypsa
@@ -15,6 +16,8 @@ outputpath = ARGS[1]#path.joinpath("output_pypsa.json")#
 
 with open(inputpath) as f:
     networkdict = json.load(f)
+
+t0 = time.time()
 
 network = pypsa.Network()
 
@@ -29,6 +32,13 @@ for objectclass, objects in networkdict.items():
 
 network.optimize()
 
+t1 = time.time()
+
+outputdata = {
+    "time" : t1-t0,
+    "objective" : network.objective,
+}
 with open(outputpath, "w") as f:
-    print(network.links_t.p0, file=f)
-    print(network.generators_t.p, file=f)
+    json.dump(outputdata, f, indent=4)
+    #print(network.links_t.p0, file=f)
+    #print(network.generators_t.p, file=f)
