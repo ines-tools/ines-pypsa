@@ -1,31 +1,36 @@
 import sys
 import json
 import spinedb_api as api
-#from pathlib import Path
 
-#path = Path(__file__).resolve().parent
-#ines = ARGS[1] # use template to verify valid fields?
-#map = ARGS[2] # use map to make a general structure like the exporters?
-ARGS = sys.argv[1:]
-input = ARGS[0]
-output = ARGS[1]
+ines = sys.argv[1]
+input = sys.argv[2]
+output = sys.argv[3]
 
 with open(input) as f:
     pypsadict = json.load(f)
 
-iodb = {# replace by ines spec
-    "entity_classes" : [
-        ('node', ()),
-        ('unit',()),
-        ('link',()),
-        ('node__link__node', ('node', 'link', 'node')),
-        ('node__to_unit', ('node', 'unit')),
-        ('unit__to_node', ('unit', 'node')),
-    ],
-    "entities" : [],
-    "parameter_values" : [],
-    "alternatives" : [["PyPSA", ""]]
-}
+print("Load full database")
+if ines.split(".")[-1] == 'json':
+    with open(ines) as f:
+        iodb = {
+            "entities" : [],
+            "parameter_values" : [],
+            "alternatives" : [["PyPSA", ""]]
+        }
+        iodb.update(json.load(f))
+        
+else:
+    with api.DatabaseMapping(ines) as ines_db:
+        iodb = {
+            "entities" : [],
+            "parameter_values" : [],
+            "alternatives" : [["PyPSA", ""]]
+        }
+        iodb["entity_classes"]=ines_db.get_items("entity_class")
+        iodb["parameter_value_list"]=ines_db.get_items("parameter_value_list")
+        iodb["parameter_definitions"]=ines_db.get_items("parameter_definition")
+
+print("convert from PyPSA to ines")
 
 #Bus => node
 for (name,parameters) in pypsadict["Bus"].items():
@@ -58,10 +63,12 @@ for (name,parameters) in pypsadict["Link"].items():
         iodb["parameter_values"].append(["unit__to_node", ["link "+name, parameters["bus1"]], "capacity_per_unit", parameters["p_nom"], "PyPSA"])
 
 #SpineInterface.import_data(output, iodb, "import data from PyPSA")
-if output.split(".")[-1] == '.json':
+if output.split(".")[-1] == 'json':
+    print("write to json")
     with open(output, 'w') as f:
         json.dump(iodb, f, indent=4)
 else:
+    print("write to spine database")
     with api.DatabaseMapping(output) as target_db:
         target_db.purge_items('parameter_value')
         target_db.purge_items('entity')
