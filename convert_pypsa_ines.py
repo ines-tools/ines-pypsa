@@ -76,4 +76,5 @@ else:
         target_db.refresh_session()
         target_db.commit_session("Purge items")
         api.import_data(target_db,**iodb)
+        target_db.refresh_session()
         target_db.commit_session("Import data")

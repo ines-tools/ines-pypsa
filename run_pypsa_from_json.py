@@ -5,7 +5,7 @@
 
 import sys
 import time
-from pathlib import Path
+#from pathlib import Path
 import json
 import pypsa
 
@@ -34,10 +34,14 @@ network.optimize()
 
 t1 = time.time()
 
+m = network.optimize.create_model()
+
 outputdata = {
     "tool" : "PyPSA",
     "time" : t1-t0,
     "objective" : network.objective,
+    "#variables" : len(m.variables),
+    "#constraints" : len(m.constraints)
 }
 with open(outputpath, "w") as f:
     json.dump(outputdata, f, indent=4)
