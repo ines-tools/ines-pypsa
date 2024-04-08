@@ -130,7 +130,7 @@ def map_unit__to_node(iodb,entities,parameters):
 	return
 
 def map_node__link__node(iodb,entities,parameters):
-	entityname = entities[0]
+	entityname = ''.join(entities[0])
 	busname0 = entities[1]
 	busname1 = entities[3]
 
