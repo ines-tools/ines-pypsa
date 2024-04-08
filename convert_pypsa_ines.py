@@ -1,6 +1,7 @@
 import sys
 import json
 import spinedb_api as api
+from spinedb_api import purge
 
 ines = sys.argv[1]
 input = sys.argv[2]
@@ -70,11 +71,7 @@ if output.split(".")[-1] == 'json':
 else:
     print("write to spine database")
     with api.DatabaseMapping(output) as target_db:
-        target_db.purge_items('parameter_value')
-        target_db.purge_items('entity')
-        target_db.purge_items('alternative')
-        target_db.refresh_session()
-        target_db.commit_session("Purge items")
+        purge.purge(target_db, purge_settings=None)
         api.import_data(target_db,**iodb)
         target_db.refresh_session()
         target_db.commit_session("Import data")
