@@ -5,14 +5,13 @@
 
 import sys
 import time
-#from pathlib import Path
+from pathlib import Path
 import json
 import pypsa
 
-#path = Path(__file__).resolve().parent
-ARGS = sys.argv[1:]
-inputpath = ARGS[0]#path.joinpath("input_pypsa.json")#
-outputpath = ARGS[1]#path.joinpath("output_pypsa.json")#
+path = Path(__file__).resolve().parent
+inputpath = sys.argv[1]#path.joinpath("input_pypsa.json")#
+outputpath = path.joinpath("data/output_pypsa.json")#ARGS[1]
 
 with open(inputpath) as f:
     networkdict = json.load(f)
