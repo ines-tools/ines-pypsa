@@ -17,9 +17,9 @@ for component,attributes in n.components.items():
             datadict = value.to_dict(orient='index')
             for datakey,datavalue in datadict.items():
                 if 'typ' in datavalue:
-                    datadict[datakey]['typ'] = datadict[datakey]['typ'].__name__
+                    datadict[datakey]['typ'] = str(datadict[datakey]['typ'])
                 if 'dtype' in datavalue:
-                    datadict[datakey]['dtype'] = datadict[datakey]['dtype'].name
+                    datadict[datakey]['dtype'] = str(datadict[datakey]['dtype'])
             iodb[component][key] = datavalue
         else: 
             iodb[component][key] = value
