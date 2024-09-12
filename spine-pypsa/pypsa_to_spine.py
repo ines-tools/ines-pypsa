@@ -3,9 +3,18 @@ import pypsa
 import spinedb_api as api
 from spinedb_api import purge
 
+'''
+Conversion script to convert a nc file with PyPSA data to a spine database.
+
+There are a lot of possible ways to structure the data in the spine database. Here, we choose for a quite literal map (following the tables from https://pypsa.readthedocs.io/en/latest/user-guide/components.html) as it makes the conversion scripts easier and PyPSA is not designed to directly make use of the more advanced features of the spine database anyway.
+
+The data is streamed to the database in pieces, alternatively all data could be collected in a dictionary first and then imported in its entirety.
+'''
+
 def main(input, output):
     print("load nc file")
     n = pypsa.Network(input)
+    # check https://pypsa.readthedocs.io/en/latest/user-guide/components.html for the structure of n
 
     # Set icons for PyPSA components in spine, default is None
     iconmap = {
@@ -28,23 +37,27 @@ def main(input, output):
     }
 
     with api.DatabaseMapping(output) as spinedb:
+        # first empty the database
+        purge.purge(spinedb, purge_settings=None)
+        # to add parameter values we need at least one alternative defined. Here we choose PyPSA but it can be anything
         datadict = {
             "alternatives": [[
                 "PyPSA",
                 ""
             ]]
         }
-        purge.purge(spinedb, purge_settings=None)
         spinedb.refresh_session()
         api.import_data(spinedb,**datadict)
 
-        # the data is streamed to the database in pieces, alternatively all data could be collected in a dictionary first and then imported in its entirety.
-        # check https://pypsa.readthedocs.io/en/latest/user-guide/components.html for the structure of n
+        # the for loops follow the PyPSA format
+        # the datadicts follow the spine format
         for component,table in n.components.items():
+            # sometimes it is good to refresh the session
             spinedb.refresh_session()
 
-            print("add " + component + " class and parameter definitions")
+            print("define " + component + " class and parameter definitions")
 
+            # first collect some data in a dictionary
             datadict = {
                 "entity_classes":[[
                     component, # class name
@@ -64,10 +77,12 @@ def main(input, output):
                     None, # parameter value list
                     dataframe["description"] # description
                 ])
+            # then stream it to the spine database
             api.import_data(spinedb,**datadict)
             spinedb.commit_session(component + " entity class and parameter definition")
 
             if hasattr(n, table["list_name"]):
+                #Network has list_name in the table not actually in the data, therefore we need to check whether the attribute exists
 
                 print("add " + component + " entities and parameter values")
 
@@ -75,10 +90,12 @@ def main(input, output):
                 # correct dictionary for empty keys
                 n_component = {k: v for k, v in n_component.items() if k}
                 for name,parameters in n_component.items():
-                    #Exception for shape
+                    print(name,end="\r")
+                    #Exception for shape as spine cannot deal with the Polygon objects
                     if component == "Shape":
                         parameters["geometry"] = str(parameters["geometry"])
                     
+                    #again first create dictionary
                     datadict = {
                         "entities":[[
                             component,
@@ -96,6 +113,7 @@ def main(input, output):
                             "PyPSA"
                         ])
                     #print(datadict) # debug line
+                    # then import the data to the spine database
                     api.import_data(spinedb,**datadict)
                     spinedb.commit_session(component + " entities and parameter values")
 
