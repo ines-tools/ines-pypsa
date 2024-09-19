@@ -1,0 +1,6 @@
+Bus:
+  node:
+    x:
+    - entity_name
+    - float
+    - - - 1
