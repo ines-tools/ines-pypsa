@@ -1,6 +1,4 @@
 Bus:
   node:
-    x:
-    - entity_name
-    - float
-    - - - 1
+    x: x
+    y: y

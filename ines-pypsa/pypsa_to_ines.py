@@ -36,7 +36,7 @@ def main():
             # copy entities from yaml files
             target_db = ines_transform.copy_entities(source_db, target_db, entities_to_copy)
             # copy numeric parameters
-            #target_db = ines_transform.transform_parameters(source_db, target_db, parameter_transforms, ts_to_map=True)
+            target_db = ines_transform.transform_parameters(source_db, target_db, parameter_transforms, ts_to_map=True)
             # copy method parameters
             #target_db = ines_transform.process_methods(source_db, target_db, parameter_methods)
             # copy entities to parameters
@@ -97,7 +97,8 @@ def conversion_configuration(conversions = ['pypsa_to_ines_entities', 'pypsa_to_
                 convertdict = {
                     'Bus': {
                         'node':{
-                            'x': ["entity_name", "float", [[1]]]
+                            'x': 'x',
+                            'y':'y'
                         }
                     }
                 }
