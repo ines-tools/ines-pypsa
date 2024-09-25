@@ -20,3 +20,5 @@ Currently only general framework from PyPSA to ines. The next steps are to fill 
 + main() is general to any conversion script so it can to move to ines transform
 + the yaml conversion function also allows to put the conversion directly in a python format such that in principle the yaml files are not needed and there is only need for the pypsa_to_ines.py file
 + the yaml conversion function can be rewritten such that it is independent of the data and as such can also move to ines_transform. The idea is that a new developer for a conversion script only needs to add functions or dictionaries to a python file that calls the main and other functions.
++ convert_ines_pypsa.py and convert_pypsa_ines.py are to be deleted. However, currently they are kept because the migration is not yet complete and there is still some useful code there.
++ certify_pypsa.py and run_pypsa_in_spinetools.py need to be updated or removed.
