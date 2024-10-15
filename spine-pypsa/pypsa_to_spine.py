@@ -79,7 +79,7 @@ def main(input, output):
                 ])
             # then stream it to the spine database
             api.import_data(spinedb,**datadict)
-            spinedb.commit_session(component + " entity class and parameter definition")
+            #spinedb.commit_session(component + " entity class and parameter definition")
 
             if hasattr(n, table["list_name"]):
                 #Network has list_name in the table not actually in the data, therefore we need to check whether the attribute exists
@@ -112,13 +112,143 @@ def main(input, output):
                             value,
                             "PyPSA"
                         ])
-                    #print(datadict) # debug line
-                    # then import the data to the spine database
                     api.import_data(spinedb,**datadict)
-                    spinedb.commit_session(component + " entities and parameter values")
+                    n_component_t = getattr(n, table["list_name"]+"_t")
+                    # correct dictionary for empty keys
+                    n_component_t = {k: v for k, v in n_component_t.items() if k}
+                    for name_t,parameters_t in n_component_t.items():
+                        #print(name_t,end="\r")
+                        #Exception for shape as spine cannot deal with the Polygon objects
+                        if component == "Shape":
+                            parameters["geometry"] = str(parameters["geometry"])
+                        
+                        #again first create dictionary
+                        datadict_t = {
+                            "entities":[[
+                                component,
+                                name,
+                                None
+                            ]],
+                            "parameter_values":[],
+                        }
+                        #if parameters
+                        for entity_name,value_t in parameters_t.items():
+                            value_t = api.Map(
+                                [str(x) for x in value_t.index],
+                                value_t.values,
+                                index_name="snapshot",
+                                )
+                            datadict_t["parameter_values"].append([
+                                component,
+                                name,
+                                name_t,
+                                value_t,
+                                "PyPSA"
+                            ])
+                        #print(datadict) # debug line
+                        # then import the data to the spine database
+                        api.import_data(spinedb,**datadict_t)
+            
+        #add the time structure
+        param = "snapshots"
+        values =  getattr(n, param).to_pydatetime().tolist()
+        new_values= []
+        for val in values:
+            new_values.append(val.isoformat())
+        datadict = {
+            "entities":[['Network', 'Time', None]],
+            "parameter_values":[],
+        }
+        datadict["parameter_values"].append([
+            'Network',
+            'Time',
+            param,
+            api.Array(new_values),
+            "PyPSA"
+        ])
+        #api.import_data(spinedb,**datadict)
+
+        param = "investment_periods"
+        values =  getattr(n, param).to_list()
+        datadict["parameter_values"].append([
+            'Network',
+            'Time',
+            param,
+            api.Array(values),
+            "PyPSA"
+        ])
+        #api.import_data(spinedb,**datadict)
+        param = "snapshot_weightings"#, "investment_period_weightings"]
+        values =  getattr(n, param).to_dict()
+        name_arr = []
+        in_value_arr = []
+        for name, time_val in values.items():
+            time_arr= []
+            val_arr= []
+            for time, val in time_val.items():
+                time_arr.append(time.isoformat())
+                val_arr.append(val)
+            in_value_arr.append(api.Map(
+                    time_arr,
+                    val_arr,
+                    index_name="snapshot"
+                    ))
+            name_arr.append(name)
+        out_value = api.Map(
+                    name_arr,
+                    in_value_arr,
+                    index_name="Type"
+                    )
+        datadict["parameter_values"].append([
+            'Network',
+            'Time',
+            param,
+            out_value,
+            "PyPSA"
+        ])
+
+        param = "investment_period_weightings"
+        values =  getattr(n, param).to_dict()
+
+        name_arr = []
+        in_value_arr = []
+        for name, time_val in values.items():
+            time_arr= []
+            val_arr= []
+            for time, val in time_val.items():
+                time_arr.append(time)
+                val_arr.append(val)
+            if not time_arr:
+                in_value_arr.append(None)
+            else:
+                in_value_arr.append(api.Map(
+                        time_arr,
+                        val_arr,
+                        index_name="Year"
+                        ))
+            name_arr.append(name)
+        out_value = api.Map(
+                    name_arr,
+                    in_value_arr,
+                    index_name="Type"
+                    )
+        datadict["parameter_values"].append([
+            'Network',
+            'Time',
+            param,
+            out_value,
+            "PyPSA"
+        ])
+
+        api.import_data(spinedb,**datadict)
+        
+        spinedb.commit_session(component + " entities and parameter values")
 
 if __name__ == "__main__":
-    input = sys.argv[1] # nc file
-    output = sys.argv[2] # spine db
+    #input = sys.argv[1] # nc file
+    #output = sys.argv[2] # spine db
+
+    input = "C:/Users/aetart/Documents/ines-pypsa/test_workflow/elec_s_6_ec_lcopt_Co2L-4H.nc"
+    output = 'sqlite:///C:/Users/aetart/Documents/ines-pypsa/test_workflow/pypsa_db_test.sqlite'
 
     main(input, output)
