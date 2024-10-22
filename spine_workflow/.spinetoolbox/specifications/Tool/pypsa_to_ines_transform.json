@@ -1,0 +1,14 @@
+{
+    "name": "pypsa_to_ines_transform",
+    "tooltype": "python",
+    "includes": [
+        "pypsa_to_ines.py",
+        "pypsa_to_ines_settings.yaml"
+    ],
+    "description": "",
+    "inputfiles": [],
+    "inputfiles_opt": [],
+    "outputfiles": [],
+    "cmdline_args": [],
+    "includes_main_path": "../../../../ines-pypsa"
+}
