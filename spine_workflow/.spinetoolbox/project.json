@@ -1,0 +1,189 @@
+{
+    "project": {
+        "version": 13,
+        "description": "",
+        "settings": {
+            "enable_execute_all": true
+        },
+        "specifications": {
+            "Tool": [
+                {
+                    "type": "path",
+                    "relative": true,
+                    "path": ".spinetoolbox/specifications/Tool/pypsa_to_spine.json"
+                },
+                {
+                    "type": "path",
+                    "relative": true,
+                    "path": ".spinetoolbox/specifications/Tool/pypsa_to_ines_transform.json"
+                }
+            ]
+        },
+        "connections": [
+            {
+                "name": "from pypsa_nc to pypsa_to_spine_transform",
+                "from": [
+                    "pypsa_nc",
+                    "right"
+                ],
+                "to": [
+                    "pypsa_to_spine_transform",
+                    "left"
+                ],
+                "filter_settings": {
+                    "known_filters": {},
+                    "auto_online": true,
+                    "enabled_filter_types": {
+                        "alternative_filter": false,
+                        "scenario_filter": true
+                    }
+                }
+            },
+            {
+                "name": "from pypsa_to_spine_transform to pypsa_db",
+                "from": [
+                    "pypsa_to_spine_transform",
+                    "right"
+                ],
+                "to": [
+                    "pypsa_db",
+                    "left"
+                ],
+                "filter_settings": {
+                    "known_filters": {},
+                    "auto_online": true,
+                    "enabled_filter_types": {
+                        "alternative_filter": false,
+                        "scenario_filter": true
+                    }
+                }
+            },
+            {
+                "name": "from pypsa_db to pypsa_to_ines_transform",
+                "from": [
+                    "pypsa_db",
+                    "right"
+                ],
+                "to": [
+                    "pypsa_to_ines_transform",
+                    "left"
+                ],
+                "filter_settings": {
+                    "known_filters": {
+                        "db_url@pypsa_db": {
+                            "scenario_filter": {},
+                            "alternative_filter": {
+                                "PyPSA": true
+                            }
+                        }
+                    },
+                    "auto_online": true,
+                    "enabled_filter_types": {
+                        "alternative_filter": false,
+                        "scenario_filter": true
+                    }
+                }
+            },
+            {
+                "name": "from pypsa_to_ines_transform to ines_db",
+                "from": [
+                    "pypsa_to_ines_transform",
+                    "right"
+                ],
+                "to": [
+                    "ines_db",
+                    "left"
+                ],
+                "filter_settings": {
+                    "known_filters": {},
+                    "auto_online": true,
+                    "enabled_filter_types": {
+                        "alternative_filter": false,
+                        "scenario_filter": true
+                    }
+                }
+            }
+        ],
+        "jumps": []
+    },
+    "items": {
+        "pypsa_nc": {
+            "type": "Data Connection",
+            "description": "",
+            "x": -505.3836489013558,
+            "y": -87.06609396914446,
+            "file_references": [],
+            "db_references": []
+        },
+        "pypsa_to_spine_transform": {
+            "type": "Tool",
+            "description": "",
+            "x": -385.3046270466265,
+            "y": -84.06381486676015,
+            "specification": "pypsa_to_spine",
+            "execute_in_work": true,
+            "cmd_line_args": [
+                {
+                    "type": "resource",
+                    "arg": "db_url@pypsa_db"
+                }
+            ],
+            "kill_completed_processes": false,
+            "log_process_output": false
+        },
+        "pypsa_db": {
+            "type": "Data Store",
+            "description": "",
+            "x": -262.1990416082281,
+            "y": -88.06685366993922,
+            "url": {
+                "dialect": "sqlite",
+                "host": "",
+                "port": "",
+                "database": {
+                    "type": "path",
+                    "relative": true,
+                    "path": "pypsa_db_template.sqlite"
+                },
+                "schema": ""
+            }
+        },
+        "ines_db": {
+            "type": "Data Store",
+            "description": "",
+            "x": 33.025070126227206,
+            "y": -87.06609396914446,
+            "url": {
+                "dialect": "sqlite",
+                "host": "",
+                "port": "",
+                "database": {
+                    "type": "path",
+                    "relative": true,
+                    "path": "ines_spec_db_template.sqlite"
+                },
+                "schema": ""
+            }
+        },
+        "pypsa_to_ines_transform": {
+            "type": "Tool",
+            "description": "",
+            "x": -122.56113491388254,
+            "y": -90.14827278789704,
+            "specification": "pypsa_to_ines_transform",
+            "execute_in_work": true,
+            "cmd_line_args": [
+                {
+                    "type": "resource",
+                    "arg": "db_url@pypsa_db"
+                },
+                {
+                    "type": "resource",
+                    "arg": "db_url@ines_db"
+                }
+            ],
+            "kill_completed_processes": false,
+            "log_process_output": false
+        }
+    }
+}
