@@ -62,7 +62,6 @@ This includes also entities:
     - co2_emmissions: not in ines format yet
     - max_relative_growth: not in ines format yet
 - Generator
-    - 'active':
     - 'build_year'
     - 'control'
     - 'down_time_before: hot start not in ines
@@ -83,7 +82,6 @@ This includes also entities:
     - 'up_time_before': not in ines format yet
     - 'weight': #for network clustering
 - Line
-    - 'active': # entity_alternative
     - 'b'
     - 'b_pu'
     - 'build_year'
@@ -107,7 +105,6 @@ This includes also entities:
     - 'x_pu':
     - 'x_pu_eff':
 - Link
-    - 'active':
     - 'build_year'
     - 'control'
     - 'down_time_before: hot start not in ines
@@ -125,7 +122,6 @@ This includes also entities:
     - 'terrain_factor'
     - 'up_time_before': not in ines format yet
 - Load
-    - 'active':
     - 'p'
     - 'p_set'
     - 'q'
@@ -133,7 +129,6 @@ This includes also entities:
     - 'sign'
     - 'type'
 - StorageUnit:
-    - 'active':
     - 'build_year'
     - 'control'
     - 'cyclic_state_of_charge'
@@ -152,7 +147,6 @@ This includes also entities:
     - 'state_of_charge_initial_per_period'
     - 'type'
 - Store
-    - 'active'
     - 'build_year'
     - 'control'
     - 'e_cyclic'

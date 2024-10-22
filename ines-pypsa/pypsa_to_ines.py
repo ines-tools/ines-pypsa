@@ -72,8 +72,8 @@ def main():
             target_db = add_profile_methods(target_db)
             target_db = add_inflow_methods_and_state_fix(target_db)
             target_db = add_node_types(target_db)
-            target_db = change_same_name_entities(target_db)
             target_db = add_entity_alternative_items(target_db)
+            target_db = change_same_name_entities(target_db)
             target_db.commit_session("loads to nodes")
 
 # only the part below is specific to a tool
@@ -478,6 +478,9 @@ def create_link_unit_params(source_db, target_db, names, alt_ent_class_source, p
     target_db = add_unit_capacities(source_db,target_db, alt_ent_class_source, alt_ent_class_unit, relationship_list)
     target_db = add_lifetime(source_db, target_db, alt_ent_class_source, alt_ent_class_unit)
     target_db = add_ramps(source_db,target_db, alt_ent_class_source, relationship_list)
+    target_db = add_entity_alternative(source_db, target_db, alt_ent_class_source, alt_ent_class_unit)
+    for relationship in relationship_list:
+        target_db = add_entity_alternative(source_db, target_db, alt_ent_class_source, relationship)
     
     return target_db
 
@@ -543,7 +546,8 @@ def map_storageUnits_to_nodes_and_units(source_db,target_db):
             target_db = ines_transform.add_item_to_DB(target_db, target_name, alt_ent_class_storage, value, value_type=True)
         
         target_db = add_storage_capacities(source_db, target_db, alt_ent_class_source, alt_ent_class_storage)
-        target_db = add_lifetime(source_db, target_db, alt_ent_class_source, alt_ent_class_storage, storage= True) 
+        target_db = add_lifetime(source_db, target_db, alt_ent_class_source, alt_ent_class_storage, storage= True)
+        target_db = add_entity_alternative(source_db, target_db, alt_ent_class_source, alt_ent_class_storage) 
         
         #add relationships
         out_class = 'unit' + "__" + 'to_node'
@@ -637,6 +641,9 @@ def create_storageUnit_params(source_db, target_db, names, alt_ent_class_source,
     target_db = add_ramps(source_db,target_db, alt_ent_class_source, relationship_list)
     target_db = add_unit_capacities(source_db,target_db, alt_ent_class_source, alt_ent_class_unit, relationship_list)
     target_db = add_lifetime(source_db, target_db, alt_ent_class_source, alt_ent_class_unit)
+    target_db = add_entity_alternative(source_db, target_db, alt_ent_class_source, alt_ent_class_unit)
+    for relationship in relationship_list:
+        target_db = add_entity_alternative(source_db, target_db, alt_ent_class_source, relationship)
     #all of the invesment cost is set to the storage
     target_db = ines_transform.add_item_to_DB(target_db, "investment_cost", alt_ent_class_out, 0.0, value_type=True)
 
@@ -748,6 +755,8 @@ def add_generator_modified_parameters(source_db, target_db):
         target_db = ines_transform.add_item_to_DB(target_db, "interest_rate", alt_ent_class_unit, settings["Interest_rate"], value_type=True)
         target_db = calculate_investment_cost(source_db, target_db, alt_ent_class_source, alt_ent_class_relationship)
         target_db = add_ramps(source_db,target_db, alt_ent_class_source, [alt_ent_class_relationship])
+        target_db = add_entity_alternative(source_db, target_db, alt_ent_class_source, alt_ent_class_unit)
+        target_db = add_entity_alternative(source_db, target_db, alt_ent_class_source, alt_ent_class_relationship)
         
     return target_db
 
@@ -796,6 +805,7 @@ def add_line_capacities_and_lifetimes(source_db, target_db):
         target_db = add_lifetime(source_db, target_db, alt_ent_class_source, alt_ent_class_target)
         target_db = ines_transform.add_item_to_DB(target_db, "interest_rate", alt_ent_class_target, settings["Interest_rate"], value_type=True)
         target_db = calculate_investment_cost(source_db, target_db, alt_ent_class_source, alt_ent_class_target)
+        target_db = add_entity_alternative(source_db, target_db, alt_ent_class_source, alt_ent_class_target)
     
     return target_db
 
@@ -845,6 +855,7 @@ def add_store_capacities_and_lifetimes(source_db, target_db):
         target_db = add_lifetime(source_db, target_db, alt_ent_class_source, alt_ent_class_target, storage = True)
         target_db = ines_transform.add_item_to_DB(target_db, "storage_interest_rate", alt_ent_class_target, settings["Interest_rate"], value_type=True)
         target_db = calculate_investment_cost(source_db, target_db, alt_ent_class_source, alt_ent_class_target, storage = True)
+        target_db = add_entity_alternative(source_db, target_db, alt_ent_class_source, alt_ent_class_target)
     
     return target_db
 
@@ -1011,15 +1022,32 @@ def add_node_types(target_db):
 
     return target_db
 
+def add_entity_alternative(source_db, target_db, alt_ent_class_source, alt_ent_class_target):
+    active =  ines_transform.get_parameter_from_DB(source_db, "active", alt_ent_class_source)
+    if isinstance(active, bool):
+        ines_transform.assert_success(target_db.add_update_entity_alternative_item(
+                    entity_class_name= alt_ent_class_target[2],
+                    entity_byname= alt_ent_class_target[1],
+                    alternative_name= alt_ent_class_target[0],
+                    active=active,
+                ))
+    return target_db
+
 def add_entity_alternative_items(target_db):
     for entity_class in target_db.get_entity_class_items():
-        for entity in target_db.get_entity_items(entity_class_name=entity_class["name"]): 
-            ines_transform.assert_success(target_db.add_update_entity_alternative_item(
+        for entity in target_db.get_entity_items(entity_class_name=entity_class["name"]):
+            item = target_db.get_entity_alternative_item(
                 entity_class_name=entity_class["name"],
                 entity_byname=entity["entity_byname"],
                 alternative_name=settings["Alternative"],
-                active=True,
-            ))
+            )
+            if not item:
+                ines_transform.assert_success(target_db.add_update_entity_alternative_item(
+                    entity_class_name=entity_class["name"],
+                    entity_byname=entity["entity_byname"],
+                    alternative_name=settings["Alternative"],
+                    active=True,
+                ))
     return target_db
 
 #PyPSA earth produces same name entities for bus, store, generator and link for example in csp...
