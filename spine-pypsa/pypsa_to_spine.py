@@ -133,16 +133,12 @@ def main(input, output):
                         }
                         #if parameters
                         for entity_name,value_t in parameters_t.items():
-                            value_t = api.Map(
-                                [str(x) for x in value_t.index],
-                                value_t.values,
-                                index_name="snapshot",
-                                )
+                            value_out = api.TimeSeriesVariableResolution(value_t.index, value_t.values, ignore_year = False, repeat=False, index_name="time step")
                             datadict_t["parameter_values"].append([
                                 component,
                                 name,
                                 name_t,
-                                value_t,
+                                value_out,
                                 "PyPSA"
                             ])
                         #print(datadict) # debug line
@@ -151,10 +147,11 @@ def main(input, output):
             
         #add the time structure
         param = "snapshots"
-        values =  getattr(n, param).to_pydatetime().tolist()
+        values =  getattr(n, param).tolist()
         new_values= []
         for val in values:
-            new_values.append(val.isoformat())
+            #new_values.append(val.isoformat())
+            new_values.append(api.DateTime(val))
         datadict = {
             "entities":[['Network', 'Time', None]],
             "parameter_values":[],
