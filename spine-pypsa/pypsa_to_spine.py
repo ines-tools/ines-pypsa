@@ -242,10 +242,7 @@ def main(input, output):
         spinedb.commit_session(component + " entities and parameter values")
 
 if __name__ == "__main__":
-    #input = sys.argv[1] # nc file
-    #output = sys.argv[2] # spine db
-
-    input = "C:/Users/aetart/Documents/ines-pypsa/test_workflow/elec_s_6_ec_lcopt_Co2L-4H.nc"
-    output = 'sqlite:///C:/Users/aetart/Documents/ines-pypsa/test_workflow/pypsa_db_test.sqlite'
-
+    input = sys.argv[1] # nc file
+    output = sys.argv[2] # spine db
+    
     main(input, output)

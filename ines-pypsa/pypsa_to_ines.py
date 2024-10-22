@@ -5,7 +5,7 @@ import numpy as np
 from datetime import datetime
 from pathlib import Path
 import math
-import ines_transform
+from ines_tools import ines_transform
 import spinedb_api as api
 #from spinedb_api import purge
 
@@ -129,88 +129,31 @@ def conversion_configuration(conversions = ['pypsa_to_ines_entities', 'pypsa_to_
             if convertname == 'pypsa_to_ines_entities':
                 convertdict = {
                     'Bus': ['node'],
-                    'Carrier': ['set'], # if emissions then also market node?
+                    'Carrier': ['set'],
                     'Generator': ['unit'],
-                    'Line': ['link'],
-                    #'LineType': [], # ready line types, could be included in the Line parameters
-                    #ShuntImpedance: power flow stuff
-                    #'SubNetwork': [], might be handled by the transform of buses and carriers to nodes
-                    #'Transformer: [], between busses of different voltage
-                    #'TransformerType: [], ready types, could be included in the transformer
+                    'Line': ['link']
                 }
             if convertname == 'pypsa_to_ines_parameters':
                 convertdict = {
                     'Bus': {
                         'node':{
-                            #'x': 'x', coordinates
-                            #'y':'y'
-                            #'control': type of node
-                            #'generator': slack producing generator?
-                            #'marginal_price': maybe a result param ie. nodal shadow price
-                            #'p' active power at bus
-                            #'q' reactive power at bus
-                            #'sub_network' again a set?
-                            #v_ang voltage_angle
-                            #v_mag_pu voltage magnitude
-                            #v_mag_pu_set: voltage calculations
-                            #v_nom: nominal voltage
                         }
                     },
                     'Carrier':{
                         'set':{
-                            #'max_growth': 'invest_max_period'
-                            #max_relative_growth: not in ines format
                         },
                     },
                     'Generator':{
                         'unit':{
-                            #'active': #entity alternative
-                            #'build_year': #maybe to lifetime calucation
-                            #'control' slack ?? or empty?
-                            #'down_time_before: hot start not in ines
-                            #'e_sum_max: max production of energy in period, in a set in ines, create a set for individual units?
-                            #'e_sum_min:
                             'efficiency': 'efficiency',
-                            #'min_down_time' # not ines?
-                            #'min_up_time' # not ines?
-                            #'p_set': power_flow stuff
-                            #'q_set': power_flow stuff
-                            #'ramp_limit_shut_down': # not in ines
-                            #'ramp_limit_start_up: # not in ines
                             'shut_down_cost': 'shutdown_cost',
-                            #'sign' power_flow stuff
-                            # stand_by_cost # not in ines
                             'start_up_cost': 'startup_cost',
-                            # up_time_before # no hot start in ines
-                            #'weight': #for network clustering
                         }
                     },
                     'Line':{
                         'link':{
-                            #'active': # entity_alternative
-                            #'b' power flow stuff
-                            #'b_pu' power flow stuff
-                            #'build_year': #maybe to lifetime calucation
-                            #'capital_cost': 'investment_cost',
-                            #g: power_flow stuff
-                            #g_pu: power_flow stuff
-                            #length, not in ines
-                            #'num_parallel' number of parallel lines, if type is set
-                            # 'r' resistance
-                            # 'r_pu' per unit resistance
-                            # 'r_pu_eff' effective resistance, calculated from other
-                            #sub_network: # not sure if need to be implemented
-                            #Terrain_factor: for increasing capital cost 
-                            #type: ready types of lines
-                            #v_ang_max: power_flow stuff
-                            #v_ang_min: power_flow stuff
-                            #x: power_flow stuff
-                            #x_pu: power_flow stuff
-                            #x_pu_eff: power_flow stuff
                         }    
                     },
-                    #"Transformer": {} #maybe needed to create links between different voltage nodes
-                    #"TransformerType": {} #ready values that should replace values from the Transformer
                 }
             if convertname == 'pypsa_to_ines_parameter_methods':
                 convertdict = {
@@ -235,7 +178,6 @@ def conversion_configuration(conversions = ['pypsa_to_ines_entities', 'pypsa_to_
                                 'bus': {
                                     'position': 2,
                                     'parameters':{
-                                        #'capital_cost': 'investment_cost',
                                         'marginal_cost': 'other_operational_cost',
                                     }
                                 }
@@ -251,7 +193,7 @@ def conversion_configuration(conversions = ['pypsa_to_ines_entities', 'pypsa_to_
                         'node':{
                             'set':{
                                 'carrier': {
-                                    'position': 1  #AC and DC not as carrier elements... create them manually?
+                                    'position': 1
                                 }
                             }
                         }
@@ -260,7 +202,7 @@ def conversion_configuration(conversions = ['pypsa_to_ines_entities', 'pypsa_to_
                         'link':{
                             'set':{
                                 'carrier': {
-                                    'position': 1  #AC and DC not as carrier elements... create them manually?
+                                    'position': 1 
                                 }
                             },
                             ('node','node'):{
@@ -277,7 +219,6 @@ def conversion_configuration(conversions = ['pypsa_to_ines_entities', 'pypsa_to_
                         "node":{
                             "bus":{
                                 # make mapping to add to the node from bus parameter
-                                #'capital_cost': 'storage_investment_cost',
                                 'e_max_pu': 'storage_state_upper_limit',
                                 'e_min_pu':'storage_state_lower_limit',
                                 #'e' result param?
@@ -504,7 +445,6 @@ def create_link_unit_params(source_db, target_db, names, alt_ent_class_source, p
         'efficiency': 'efficiency',
         'shut_down_cost': 'shutdown_cost',
         'start_up_cost': 'startup_cost',
-        #up_time_before # no hot start in ines
     }
     for name, target_name in parameters_dict.items(): 
         value = ines_transform.get_parameter_from_DB(source_db, name, alt_ent_class_source)
@@ -597,9 +537,6 @@ def map_storageUnits_to_nodes_and_units(source_db,target_db):
             'inflow': 'flow_profile',
             'spill_cost': 'penalty_downward',
             'state_of_charge': 'storage_state_fix',
-            #'state_of_charge_initial' # not in ines
-            #'state_of_charge_initial_per_period'
-            #'marginal_cost_storage': #not in ines
         }
         for name, target_name in node_param_dict.items():
             value = ines_transform.get_parameter_from_DB(source_db, name, alt_ent_class_source)
@@ -924,7 +861,6 @@ def bind_investments(source_db, target_db, alt_ent_class_source, investment_bind
             constraint_name = alt_ent_class_source[1][0] + "_investment_bind_"+ direction
             name_list.append(constraint_name)
             alt_ent_class_constraint = [settings["Alternative"],(constraint_name,),'constraint']
-            asd
             ines_transform.assert_success(target_db.add_entity_item(
                                 entity_class_name="constraint",
                                 entity_byname=(constraint_name,),
