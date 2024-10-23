@@ -221,10 +221,6 @@ def conversion_configuration(conversions = ['pypsa_to_ines_entities', 'pypsa_to_
                                 # make mapping to add to the node from bus parameter
                                 'e_max_pu': 'storage_state_upper_limit',
                                 'e_min_pu':'storage_state_lower_limit',
-                                #'e' result param?
-                                #'marginal_cost' option to buy/sell from the market (create units for this)
-                                #'marginal_cost_storage': not in ines
-                                #'standing_loss': not in ines
                             }
                         }
                     }  
@@ -617,18 +613,11 @@ def create_storageUnit_params(source_db, target_db, names, alt_ent_class_source,
     if p_min_pu != None:
         value = ines_transform.get_parameter_from_DB(source_db, 'efficiency_store', alt_ent_class_source)
         target_db = ines_transform.add_item_to_DB(target_db, 'efficiency', alt_ent_class_unit, value, value_type=True)
+        marginal_cost = ines_transform.get_parameter_from_DB(source_db, 'marginal_cost', alt_ent_class_source)
+        target_db = ines_transform.add_item_to_DB(target_db, 'other_operational_cost', alt_ent_class_out,  marginal_cost, value_type=True)
     else:
         value = ines_transform.get_parameter_from_DB(source_db, 'efficiency_dispatch', alt_ent_class_source)
         target_db = ines_transform.add_item_to_DB(target_db, 'efficiency', alt_ent_class_unit, value, value_type=True)
-
-    #add parameters to relationships
-    parameters_dict = {
-        'marginal_cost': 'other_operational_cost',
-    }
-    for name, target_name in parameters_dict.items():
-        value = ines_transform.get_parameter_from_DB(source_db,name, alt_ent_class_source)
-        target_db = ines_transform.add_item_to_DB(target_db, target_name, alt_ent_class_out, value, value_type=True)
-        target_db = ines_transform.add_item_to_DB(target_db, target_name, alt_ent_class_in, value, value_type=True)
 
     if p_min_pu != None:
         if isinstance(p_min_pu, api.TimeSeriesVariableResolution) or (isinstance(p_min_pu, float) and p_min_pu != 1.0):

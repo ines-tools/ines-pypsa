@@ -2,7 +2,8 @@
 Translation between the ines specification and the PyPSA structure
 
 ## use
-Get spine-toolbox "https://github.com/spine-tools/Spine-Toolbox", follow its install instructions
+Get spine-toolbox "https://github.com/spine-tools/Spine-Toolbox", follow its install instructions.
+
 Get ines-tools repository "https://github.com/energy-modelling-workbench/ines-tools" and install it "pip install ." 
 
 Open folder spine_workflow as a spine project. 
@@ -24,8 +25,12 @@ Currently only PyPSA -> Ines direction is functional.
 
 ## Information lost in the format transfromation
 
-### Voltage and frequency
-Currently only the energy flow is implemented in the INES-spec. So all parameters related to voltage, angle, reactive power ect. are excluded.
+### Power flow
+Currently only the energy flow is implemented in the INES-spec. 
+This means that the network is only represented as active power flows with balance in every bus (node).
+Slack is always distributed to all buses. 
+
+All parameters related to voltage, angle, reactive power ect. are excluded.
 This includes also entities: 
  - LineType
  - ShuntImpedance
@@ -93,14 +98,11 @@ This includes also entities:
     - 'q_set'
     - 'ramp_limit_shut_down': not in ines format yet
     - 'ramp_limit_start_up: not in ines format yet
-    - 'sign' power_flow stuff
     - 'stand_by_cost': not in ines format yet
     - 'terrain_factor'
     - 'up_time_before': not in ines format yet
 - Load
-    - 'p_set'
     - 'q_set'
-    - 'sign'
     - 'type' placeholder
 - StorageUnit:
     - 'build_year'
@@ -128,12 +130,12 @@ This includes also entities:
     - 'marginal_cost_storage'
     - 'p_set'
     - 'q_set'
-    - 'sign'
     - 'standing_loss'
 
 ## development
 Currently only first version from PyPSA format to INES. Testing is still needed.
-+ Add multi-input/output links
++ Calculate line efficiency
++ Add multi-input/output links. See sector coupling example of PyPSA.
 + Add units also between market nodes and stores with 'marginal cost'
 + Parameters from the missing parameters list can be included if they are addded to the ines spec
 + main() is general to any conversion script so it can to move to ines transform
