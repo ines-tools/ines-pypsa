@@ -42,21 +42,12 @@ This includes also entities:
 ### List of parameters not implemented:
 - GlobalConstraint:
     - Completely missing
-- SubNetwork: 
-    - Completely missing
 - Bus: 
     - 'x': coordinates not planned to implement
     - 'y': coordinates not planned to implement
-    - 'control': type of node
-    - 'generator': slack producing generator?
-    - 'p': active power at bus
-    - 'q': reactive power at bus
-    - 'sub_network'
-    - 'v_ang'
-    - 'v_mag_pu'
     - 'v_mag_pu_set'
-    - 'v_mag_pu_min'
-    - 'v_mag_pu_max'
+    - 'v_mag_pu_min'    placeholder
+    - 'v_mag_pu_max'    placeholder
     - 'v_nom'
 - Carrier
     - co2_emmissions: not in ines format yet
@@ -70,40 +61,25 @@ This includes also entities:
     - 'marginal_cost_quadratic'
     - 'min_down_time' not in ines format yet
     - 'min_up_time' not in ines format yet
-    - 'p'
     - 'p_set'
-    - 'q'
     - 'q_set'
     - 'ramp_limit_shut_down': not in ines format yet
     - 'ramp_limit_start_up: not in ines format yet
-    - 'sign' power_flow stuff
-    - 'status'
     - 'stand_by_cost': not in ines format yet
     - 'up_time_before': not in ines format yet
     - 'weight': #for network clustering
 - Line
     - 'b'
-    - 'b_pu'
     - 'build_year'
     - 'g'
-    - 'g_pu'
     - 'length', not in ines
     - 'num_parallel'
-    - 'p0'
-    - 'p1'
-    - 'q0'
-    - 'q1'
     - 'r'
-    - 'r_pu'
-    - 'r_pu_eff'
-    - 'sub_network': 
     - 'terrain_factor'
     - 'type': ready types of lines
-    - 'v_ang_max': 
-    - 'v_ang_min': 
+    - 'v_ang_max':  placeholder
+    - 'v_ang_min':  placeholder
     - 'x':
-    - 'x_pu':
-    - 'x_pu_eff':
 - Link
     - 'build_year'
     - 'control'
@@ -122,12 +98,10 @@ This includes also entities:
     - 'terrain_factor'
     - 'up_time_before': not in ines format yet
 - Load
-    - 'p'
     - 'p_set'
-    - 'q'
     - 'q_set'
     - 'sign'
-    - 'type'
+    - 'type' placeholder
 - StorageUnit:
     - 'build_year'
     - 'control'
@@ -135,17 +109,13 @@ This includes also entities:
     - 'cyclic_state_of_charge_per_period'
     - 'marginal_cost_quadratic'
     - 'marginal_cost_storage'
-    - 'p'
-    - 'p_dispatch'
     - 'p_set'
-    - 'p_store'
-    - 'q'
     - 'q_set'
     - 'sign'
     - 'standing_loss'
     - 'state_of_charge_initial'
     - 'state_of_charge_initial_per_period'
-    - 'type'
+    - 'type'  placeholder
 - Store
     - 'build_year'
     - 'control'
@@ -156,16 +126,15 @@ This includes also entities:
     - 'marginal_cost'
     - 'marginal_cost_quadratic'
     - 'marginal_cost_storage'
-    - 'p'
     - 'p_set'
-    - 'q'
     - 'q_set'
     - 'sign'
     - 'standing_loss'
 
 ## development
 Currently only first version from PyPSA format to INES. Testing is still needed.
-+ Create a units to buy and sell from 'Store' with the 'marginal_cost'
++ Add multi-input/output links
++ Add units also between market nodes and stores with 'marginal cost'
 + Parameters from the missing parameters list can be included if they are addded to the ines spec
 + main() is general to any conversion script so it can to move to ines transform
 + remove yaml files excluding the setting file
