@@ -87,43 +87,18 @@ def main(input, output):
                 print("add " + component + " entities and parameter values")
 
                 n_component = getattr(n, table["list_name"]).to_dict("index")
+                n_component_t = getattr(n, table["list_name"]+"_t")
                 # correct dictionary for empty keys
-                n_component = {k: v for k, v in n_component.items() if k}
+                #n_component = {k: v for k, v in n_component.items() if k}
                 for name,parameters in n_component.items():
                     print(name,end="\r")
-                    #Exception for shape as spine cannot deal with the Polygon objects
-                    if component == "Shape":
-                        parameters["geometry"] = str(parameters["geometry"])
-                    
-                    #again first create dictionary
-                    datadict = {
-                        "entities":[[
-                            component,
-                            name,
-                            None
-                        ]],
-                        "parameter_values":[],
-                    }
-                    for parametername,value in parameters.items():
-                        datadict["parameter_values"].append([
-                            component,
-                            name,
-                            parametername,
-                            value,
-                            "PyPSA"
-                        ])
-                    api.import_data(spinedb,**datadict)
-                    n_component_t = getattr(n, table["list_name"]+"_t")
-                    # correct dictionary for empty keys
-                    n_component_t = {k: v for k, v in n_component_t.items() if k}
-                    for name_t,parameters_t in n_component_t.items():
-                        #print(name_t,end="\r")
+                    if name:
                         #Exception for shape as spine cannot deal with the Polygon objects
                         if component == "Shape":
                             parameters["geometry"] = str(parameters["geometry"])
                         
                         #again first create dictionary
-                        datadict_t = {
+                        datadict = {
                             "entities":[[
                                 component,
                                 name,
@@ -131,19 +106,45 @@ def main(input, output):
                             ]],
                             "parameter_values":[],
                         }
+                        for parametername,value in parameters.items():
+                            datadict["parameter_values"].append([
+                                component,
+                                name,
+                                parametername,
+                                value,
+                                "PyPSA"
+                            ])
+                        api.import_data(spinedb,**datadict)
+                        #print("timeseries_attr")
+                        # correct dictionary for empty keys
+                        #n_component_t = {k: v for k, v in n_component_t.items() if k}
+                for name_t,parameters_t in n_component_t.items():
+                    if name_t:
+                        #Exception for shape as spine cannot deal with the Polygon objects
+                        if component == "Shape":
+                            parameters["geometry"] = str(parameters["geometry"])
+                        
+                        #again first create dictionary
                         #if parameters
                         for entity_name,value_t in parameters_t.items():
                             value_out = api.TimeSeriesVariableResolution(value_t.index, value_t.values, ignore_year = False, repeat=False, index_name="time step")
-                            datadict_t["parameter_values"].append([
+                            print(entity_name+"_"+name_t+"_ts",end="\r")
+                            datadict_t = {
+                            "entities":[[
                                 component,
-                                name,
+                                entity_name,
+                                None
+                            ]],
+                            "parameter_values":[[
+                                component,
+                                entity_name,
                                 name_t,
                                 value_out,
                                 "PyPSA"
-                            ])
+                            ]]}
                         #print(datadict) # debug line
                         # then import the data to the spine database
-                        api.import_data(spinedb,**datadict_t)
+                            api.import_data(spinedb,**datadict_t)
             
         #add the time structure
         param = "snapshots"
