@@ -1,9 +1,0 @@
-#If multiple scenarios represented as different network files, change this to the scenario name between transforms
-Alternative: "PyPSA"
-#If invesments are allowed but p_nom and p_nom_mod are 0.0 this is set as capacity and number of existing units will be 0
-Default_module_capacity: 100
-#Change infinite lifetime to
-Infinite_lifetime: 100
-#Assume an interest rate
-Interest_rate: 0.05
-
