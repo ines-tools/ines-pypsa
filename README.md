@@ -11,6 +11,7 @@ It contains 5 elements:
 + 1. pypsa_nc: data connection to inputfile in nc format (change the path to your file)
 + 2. pypsa_to_spine_transform: tool for conversion from pypsa to spine
     + main file = pypsa_to_spine.py
+    + Drag the path that you added in 1. as the "0:" "Tool argument" from "Available resources". The "db_url@pypsa_db" should be the argument "1:"
 + 3. database for pypsa data in spine format
     + main file = pypsa_db_template.sqlite
 + 4. pypsa_to_ines_transform: tool for conversion from pypsa to ines 
