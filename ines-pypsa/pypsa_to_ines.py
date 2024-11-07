@@ -289,7 +289,7 @@ def add_time_structure(source_db,target_db):
             duration_hours = (datetime.fromisoformat(last)-datetime.fromisoformat(first)).total_seconds() / 60.0/60.0 + minutes_diff/60.0
             duration = api.Duration(str(duration_hours)+"h")
             target_db = ines_transform.add_item_to_DB(target_db, 'duration', [settings["Alternative"], ('base_period',), 'period'], duration)
-            target_db = ines_transform.add_item_to_DB(target_db, 'start_time', [settings["Alternative"], ('base_period',), 'period'], i )
+            target_db = ines_transform.add_item_to_DB(target_db, 'start_time', [settings["Alternative"], ('base_period',), 'period'], first )
         target_db = ines_transform.add_item_to_DB(target_db, 'period', [settings["Alternative"], ('solve',), 'period'], periods)
     else:  #add base period
         ines_transform.assert_success(target_db.add_entity_item(entity_class_name='period',entity_byname=("base_period",)), warn=True)
@@ -912,7 +912,7 @@ def add_lifetime(source_db, target_db, alt_ent_class_source, alt_ent_class_targe
     if source_lifetime and isinstance(source_lifetime, float) and source_lifetime != math.inf:
         target_db = ines_transform.add_item_to_DB(target_db, target_param, alt_ent_class_target, value=source_lifetime)
         target_db = ines_transform.add_item_to_DB(target_db, method_param, alt_ent_class_target, value='retire_as_scheduled')
-    if source_lifetime and isinstance(source_lifetime, float) and source_lifetime == math.inf:
+    elif source_lifetime and isinstance(source_lifetime, float) and source_lifetime == math.inf:
         target_db = ines_transform.add_item_to_DB(target_db, target_param, alt_ent_class_target, value=settings["Infinite_lifetime"])
         target_db = ines_transform.add_item_to_DB(target_db, method_param, alt_ent_class_target, value='retire_as_scheduled')
     else:
