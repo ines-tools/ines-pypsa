@@ -2,13 +2,24 @@
 
 import sys
 import csv
+import pprint
 import pycountry
+from fuzzywuzzy.process import extractOne
 import spinedb_api as api
 
-def main(ppm,tdr,spd):
+def main(ppm,tdr,spd,
+    exclude=['Other','Waste','Geothermal','hydro','Hydro','CHP','Reservoir', 'Run-Of-River', 'Pumped Storage', 'PV','Pv','CSP','Wind', 'Onshore', 'Offshore', 'Marine']
+):
     # load data
-    with open(tdr, 'r') as file:
-        unit_types = list(csv.DictReader(file))
+    unit_types={}
+    for year,path in tdr.items():
+        with open(path, 'r') as file:
+            unit_types[year]={}
+            for line in csv.reader(file):
+                if line[0] not in unit_types[year]:
+                    unit_types[year][line[0]]={}
+                unit_types[year][line[0]][line[1]]=line[2]
+                #unit_types[year][line[0]][line[1]+'_description']=line[3]+' '+line[4]+' '+line[5]
     #print(unit_types)
     #print("#"*50)
     with open(ppm, mode='r') as file:
@@ -21,88 +32,111 @@ def main(ppm,tdr,spd):
     }
     countrycodelist = []
     commoditylist = []
+    #unit_type_key_list = [] # for debugging
     for unit in unit_instances:
-        # region
-        #print(unit["Country"])
-        country = pycountry.countries.search_fuzzy(unit["Country"])[0]
-        #print(country)
-        countrycode = country.alpha_2
-        if countrycode not in countrycodelist:
-            countrycodelist.append(countrycode)
-            jaif["entities"].extend([
-                [
-                    "region",
-                    countrycode,
-                    None
-                ],
-                [
-                    "node",
+        if unit["Fueltype"] not in exclude and unit["Country"] not in exclude and unit["Set"] not in exclude and unit["Technology"] not in exclude:
+            unit_types_key=map_powerplants_costs(unit, unit_types)
+            #keystring = unit["Fueltype"] + ' ' + unit["Technology"] + ' ' + str(unit_types_key)
+            #if keystring not in unit_type_key_list:
+                #unit_type_key_list.append(keystring)
+            # region
+            #print(unit["Country"])
+            country = pycountry.countries.search_fuzzy(unit["Country"])[0]
+            #print(country)
+            countrycode = country.alpha_2
+            if countrycode not in countrycodelist:
+                countrycodelist.append(countrycode)
+                jaif["entities"].extend([
                     [
-                        "elec",
+                        "region",
                         countrycode,
+                        None
                     ],
-                    None
-                ],
-            ])
-        # commodity
-        if unit["Fueltype"] not in commoditylist:
-            commoditylist.append(unit["Fueltype"])
-            jaif["entities"].append([
-                "commodity",
-                unit["Fueltype"],
-                None
-            ])
-        # storage or technology
-        if unit["Set"]=="PP":
-            jaif["entities"].extend([
-                [
-                    "technology",
-                    unit["Technology"]+"|"+countrycode+"|"+unit["Name"],# or unit["id"]
-                    None
-                ],
-                [
-                    "commodity__to_technology",
                     [
-                        unit["Fueltype"],
-                        unit["Technology"]+"|"+countrycode+"|"+unit["Name"]
+                        "node",
+                        [
+                            "elec",
+                            countrycode,
+                        ],
+                        None
                     ],
-                    None
-                ],
-                [
-                    "technology__region",
+                ])
+                jaif["parameter_values"].extend([
                     [
+                        "region",
+                        countrycode,
+                        "type",
+                        "onshore",
+                        "Base"
+                    ],
+                    [
+                        "region",
+                        countrycode,
+                        "GIS_level",
+                        "PECD1",
+                        "Base"
+                    ],
+                ])
+            # commodity
+            if unit["Fueltype"] not in commoditylist:
+                commoditylist.append(unit["Fueltype"])
+                jaif["entities"].append([
+                    "commodity",
+                    unit["Fueltype"],
+                    None
+                ])
+            # storage or technology
+            if unit["Set"]=="PP":
+                jaif["entities"].extend([
+                    [
+                        "technology",
+                        unit["Technology"]+"|"+countrycode+"|"+unit["Name"],# or unit["id"]
+                        None
+                    ],
+                    [
+                        "commodity__to_technology",
+                        [
+                            unit["Fueltype"],
+                            unit["Technology"]+"|"+countrycode+"|"+unit["Name"]
+                        ],
+                        None
+                    ],
+                    [
+                        "technology__region",
+                        [
+                            unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
+                            countrycode
+                        ],
+                        None
+                    ],
+                    [
+                        "technology__to_commodity",
+                        [
+                            unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
+                            "elec"
+                        ],
+                        None
+                    ],
+                ])
+            #if unit["Set"]=="CHP": # skip
+            if unit["Set"]=="Store":
+                jaif["entities"].extend([
+                    [
+                        "storage",
                         unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
-                        countrycode
+                        None
                     ],
-                    None
-                ],
-                [
-                    "technology__to_commodity",
                     [
-                        unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
-                        "elec"
-                    ],
-                    None
-                ],
-            ])
-        #if unit["Set"]=="CHP": # skip
-        if unit["Set"]=="Store":
-            jaif["entities"].extend([
-                [
-                    "storage",
-                    unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
-                    None
-                ],
-                [
-                    "storage_connection",
-                    [
-                        unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
-                        "elec"
-                    ],
-                    None
-                ]
-            ])
+                        "storage_connection",
+                        [
+                            unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
+                            "elec"
+                        ],
+                        None
+                    ]
+                ])
 
+    #pprint.pprint(unit_type_key_list)
     # save to spine database
     with api.DatabaseMapping(spd) as target_db:
         # empty database except for intermediary format and alternatives
@@ -115,13 +149,26 @@ def main(ppm,tdr,spd):
         target_db.commit_session("Added pypsa data")
     return
 
-def commoditymap(commodityname):
-    commoditycode=commodityname
-    return commoditycode
+def map_powerplants_costs(unit, unit_types):
+    unit_types_keys={}
+    for year,unit_types_year in unit_types.items():
+        unit_type_key = extractOne(unit["Fueltype"], unit_types_year.keys())[0]
+        if unit_type_key == 'gas' and unit["Technology"] == 'CCGT':
+            unit_type_key = 'CCGT'
+        elif unit_type_key == 'gas' and unit["Technology"] == 'Steam Turbine':
+            unit_type_key = 'gas boiler steam'
+        elif unit_type_key == 'gas' and unit["Technology"] == 'Combustion Engine':
+            unit_type_key = 'direct firing gas'
+        elif unit_type_key == 'gas' and unit["Technology"] == '':
+            unit_type_key = 'CCGT'
+        elif unit_type_key == 'solid biomass':
+            unit_type_key = 'solid biomass boiler steam'
+        unit_types_keys[year] = unit_type_key
+    return unit_types_keys
 
 if __name__ == "__main__":
     ppm = sys.argv[1] # pypsa power plant matching
-    tdr = sys.argv[2] # pypsa technology data repository
-    spd = sys.argv[3] # spine database preformatted with an intermediate format for the mopo project (including the "Base" alternative)
+    tdr = {str(2020+(i-2)*10):sys.argv[i] for i in range(2,len(sys.argv)-1)} # pypsa technology data repository
+    spd = sys.argv[-1] # spine database preformatted with an intermediate format for the mopo project (including the "Base" alternative)
 
     main(ppm,tdr,spd)
