@@ -312,4 +312,4 @@ if __name__ == "__main__":
     spd = sys.argv[-1] # spine database preformatted with an intermediate format for the mopo project (including the "Base" alternative)
 
     importlog = main(ppm,tdr,spd)
-    pprint.pprint(importlog)# debug line
+    #pprint.pprint(importlog)# debug line
