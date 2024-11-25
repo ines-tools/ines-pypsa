@@ -129,7 +129,7 @@ def main(ppm,tdr,spd,
                         "Base"
                     ],
                 ])
-                pprint.pprint(year_data(unit, unit_types,unit_types_key, "efficiency"))
+                #pprint.pprint(year_data(unit, unit_types,unit_types_key, "efficiency"))
             #if unit["Set"]=="CHP": # skip
             if unit["Set"]=="Store":
                 jaif["entities"].extend([
@@ -196,13 +196,16 @@ def year_data(unit, unit_types, unit_types_keys, parameter):
     }
     data = []
     for year,unit_type_key in unit_types_keys.items():
-        unit_type_parameters = unit_types[year][unit_type_key]
-        if extractOne(parameter, unit.keys(), score_cutoff=80):
-            data.append([year, unit[extractOne(parameter, unit.keys(), score_cutoff=80)[0]]])
-        elif unit_type_parameters[extractOne(parameter, unit_type_parameters.keys(), score_cutoff=80)]:
-            data.append([year, unit_type_parameters[extractOne(parameter, unit_type_parameters.keys(), score_cutoff=80)[0]]])
-        else:
-            data.append([year, None])
+        datavalue = None
+        search_parameter = extractOne(parameter, unit.keys(), score_cutoff=80)
+        if search_parameter:
+            datavalue = unit[search_parameter[0]]
+        if not datavalue:
+            unit_type_parameters = unit_types[year][unit_type_key]
+            search_parameter = extractOne(parameter, unit_type_parameters.keys(), score_cutoff=80)
+            if search_parameter:
+                datavalue = unit_type_parameters[search_parameter[0]]
+        data.append([year, datavalue])
     parameter_value["data"] = data
     return parameter_value
 
