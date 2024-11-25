@@ -4,6 +4,7 @@
 
 import sys
 import csv
+from math import sqrt
 import pprint
 import pycountry
 from fuzzywuzzy.process import extractOne
@@ -13,6 +14,7 @@ def main(ppm,tdr,spd,
     exclude=['Other','Waste','Geothermal','hydro','Hydro','CHP','Reservoir', 'Run-Of-River', 'Pumped Storage', 'PV','Pv','CSP','Wind', 'Onshore', 'Offshore', 'Marine']
 ):
     # load data
+    yearzero=sorted(tdr.keys())[0]
     unit_types={}
     for year,path in tdr.items():
         with open(path, 'r') as file:
@@ -36,6 +38,8 @@ def main(ppm,tdr,spd,
     commoditylist = []
     #unit_type_key_list = [] # for debugging
     for unit in unit_instances:
+        if unit["DateOut"]:
+            unit["lifetime"] = max(0,float(unit["DateOut"])-float(yearzero))
         if unit["Fueltype"] not in exclude and unit["Country"] not in exclude and unit["Set"] not in exclude and unit["Technology"] not in exclude:
             unit_types_key=map_powerplants_costs(unit, unit_types)
             #keystring = unit["Fueltype"] + ' ' + unit["Technology"] + ' ' + str(unit_types_key)
@@ -128,6 +132,53 @@ def main(ppm,tdr,spd,
                         year_data(unit, unit_types,unit_types_key, "efficiency"),
                         "Base"
                     ],
+                    [
+                        "technology",
+                        unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
+                        "lifetime",
+                        onetime_data(unit, unit_types[yearzero][unit_types_key[yearzero]], "lifetime"),
+                        "Base"
+                    ],
+                    [
+                        "technology__region",
+                        [
+                            unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
+                            countrycode
+                        ],
+                        "units_existing",
+                        onetime_data(unit, unit_types[yearzero][unit_types_key[yearzero]], "capacity"),
+                        "Base"
+                    ],
+                    [
+                        "technology__to_commodity",
+                        [
+                            unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
+                            "elec"
+                        ],
+                        "investment",
+                        year_data(unit, unit_types,unit_types_key, "investment"),
+                        "Base"
+                    ],
+                    [
+                        "technology__to_commodity",
+                        [
+                            unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
+                            "elec"
+                        ],
+                        "fixed_cost",
+                        year_data(unit, unit_types,unit_types_key, "FOM"),
+                        "Base"
+                    ],
+                    [
+                        "technology__to_commodity",
+                        [
+                            unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
+                            "elec"
+                        ],
+                        "operational_cost",
+                        year_data(unit, unit_types,unit_types_key, "VOM"),# may also be 'fuel' for some data but that conflicts with Fueltype
+                        "Base"
+                    ],
                 ])
                 #pprint.pprint(year_data(unit, unit_types,unit_types_key, "efficiency"))
             #if unit["Set"]=="CHP": # skip
@@ -149,10 +200,43 @@ def main(ppm,tdr,spd,
                 ])
                 jaif["parameter_values"].extend([
                     [
-                        "storage",
-                        unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
-                        "investment_cost",
+                        "storage_connection",
+                        [
+                            unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
+                            "elec"
+                        ],
+                        "efficiency_in",
+                        year_data(unit, unit_types,unit_types_key, "efficiency", modifier=1/sqrt(2)),
+                        "Base"
+                    ],
+                    [
+                        "storage_connection",
+                        [
+                            unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
+                            "elec"
+                        ],
+                        "efficiency_out",
+                        year_data(unit, unit_types,unit_types_key, "efficiency", modifier=1/sqrt(2)),
+                        "Base"
+                    ],
+                    [
+                        "storage_connection",
+                        [
+                            unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
+                            "elec"
+                        ],
+                        "investment",
                         year_data(unit, unit_types,unit_types_key, "investment"),
+                        "Base"
+                    ],
+                    [
+                        "storage_connection",
+                        [
+                            unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
+                            "elec"
+                        ],
+                        "fixed_cost",
+                        year_data(unit, unit_types,unit_types_key, "FOM"),
                         "Base"
                     ],
                 ])
@@ -187,7 +271,7 @@ def map_powerplants_costs(unit, unit_types):
         unit_types_keys[year] = unit_type_key
     return unit_types_keys
 
-def year_data(unit, unit_types, unit_types_keys, parameter):
+def year_data(unit, unit_types, unit_types_keys, parameter, modifier=1):
     parameter_value = {
         "index_type": "str",
         "rank": 1,
@@ -196,18 +280,25 @@ def year_data(unit, unit_types, unit_types_keys, parameter):
     }
     data = []
     for year,unit_type_key in unit_types_keys.items():
-        datavalue = None
-        search_parameter = extractOne(parameter, unit.keys(), score_cutoff=80)
-        if search_parameter:
-            datavalue = unit[search_parameter[0]]
-        if not datavalue:
-            unit_type_parameters = unit_types[year][unit_type_key]
-            search_parameter = extractOne(parameter, unit_type_parameters.keys(), score_cutoff=80)
-            if search_parameter:
-                datavalue = unit_type_parameters[search_parameter[0]]
+        unit_type_parameters = unit_types[year][unit_type_key]
+        datavalue = onetime_data(unit, unit_type_parameters, parameter, modifier=modifier)
         data.append([year, datavalue])
     parameter_value["data"] = data
     return parameter_value
+
+def onetime_data(unit, unit_type_parameters, parameter, modifier=1):
+    datavalue = None
+    search_parameter = extractOne(parameter, unit.keys(), score_cutoff=80)
+    if search_parameter:
+        datavalue = unit[search_parameter[0]]
+    if not datavalue:
+        search_parameter = extractOne(parameter, unit_type_parameters.keys(), score_cutoff=80)
+        if search_parameter:
+            datavalue = unit_type_parameters[search_parameter[0]]
+    if datavalue:
+        datavalue = datavalue*modifier
+    return datavalue
+
 
 if __name__ == "__main__":
     ppm = sys.argv[1] # pypsa power plant matching
