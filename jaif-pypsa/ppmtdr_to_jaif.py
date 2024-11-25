@@ -1,4 +1,6 @@
 # Convert Power Plant Matching (ppm) and Technology Data Repository (tdr) to the Juha drive Alvaro's Intermediate data Format (jaif) for use in the data pipelines of the energy modelling workbench
+# ppm: Capacity, Efficiency and lifetime (DateOut-DateIn or DateOut-2020)
+# tdr: 2020-2050, investment, FOM, efficiency
 
 import sys
 import csv
@@ -118,6 +120,16 @@ def main(ppm,tdr,spd,
                         None
                     ],
                 ])
+                jaif["parameter_values"].extend([
+                    [
+                        "technology",
+                        unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
+                        "efficiency",
+                        year_data(unit, unit_types,unit_types_key, "efficiency"),
+                        "Base"
+                    ],
+                ])
+                pprint.pprint(year_data(unit, unit_types,unit_types_key, "efficiency"))
             #if unit["Set"]=="CHP": # skip
             if unit["Set"]=="Store":
                 jaif["entities"].extend([
@@ -134,6 +146,15 @@ def main(ppm,tdr,spd,
                         ],
                         None
                     ]
+                ])
+                jaif["parameter_values"].extend([
+                    [
+                        "storage",
+                        unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
+                        "investment_cost",
+                        year_data(unit, unit_types,unit_types_key, "investment"),
+                        "Base"
+                    ],
                 ])
 
     #pprint.pprint(unit_type_key_list)
@@ -165,6 +186,25 @@ def map_powerplants_costs(unit, unit_types):
             unit_type_key = 'solid biomass boiler steam'
         unit_types_keys[year] = unit_type_key
     return unit_types_keys
+
+def year_data(unit, unit_types, unit_types_keys, parameter):
+    parameter_value = {
+        "index_type": "str",
+        "rank": 1,
+        "index_name": "year",
+        "type": "map"
+    }
+    data = []
+    for year,unit_type_key in unit_types_keys.items():
+        unit_type_parameters = unit_types[year][unit_type_key]
+        if extractOne(parameter, unit.keys(), score_cutoff=80):
+            data.append([year, unit[extractOne(parameter, unit.keys(), score_cutoff=80)[0]]])
+        elif unit_type_parameters[extractOne(parameter, unit_type_parameters.keys(), score_cutoff=80)]:
+            data.append([year, unit_type_parameters[extractOne(parameter, unit_type_parameters.keys(), score_cutoff=80)[0]]])
+        else:
+            data.append([year, None])
+    parameter_value["data"] = data
+    return parameter_value
 
 if __name__ == "__main__":
     ppm = sys.argv[1] # pypsa power plant matching
