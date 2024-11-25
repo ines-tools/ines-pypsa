@@ -31,7 +31,13 @@ def main(ppm,tdr,spd,
     #print(unit_instances)
     # format data
     jaif = { # dictionary for intermediate data format
-        "entities":[],
+        "entities":[
+            [
+                "commodity",
+                "electricity",
+                None
+            ]
+        ],
         "parameter_values":[]
     }
     countrycodelist = []
@@ -61,7 +67,7 @@ def main(ppm,tdr,spd,
                     [
                         "node",
                         [
-                            "elec",
+                            "electricity",
                             countrycode,
                         ],
                         None
@@ -119,7 +125,7 @@ def main(ppm,tdr,spd,
                         "technology__to_commodity",
                         [
                             unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
-                            "elec"
+                            "electricity"
                         ],
                         None
                     ],
@@ -153,7 +159,7 @@ def main(ppm,tdr,spd,
                         "technology__to_commodity",
                         [
                             unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
-                            "elec"
+                            "electricity"
                         ],
                         "investment",
                         year_data(unit, unit_types,unit_types_key, "investment"),
@@ -163,7 +169,7 @@ def main(ppm,tdr,spd,
                         "technology__to_commodity",
                         [
                             unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
-                            "elec"
+                            "electricity"
                         ],
                         "fixed_cost",
                         year_data(unit, unit_types,unit_types_key, "FOM"),
@@ -173,7 +179,7 @@ def main(ppm,tdr,spd,
                         "technology__to_commodity",
                         [
                             unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
-                            "elec"
+                            "electricity"
                         ],
                         "operational_cost",
                         year_data(unit, unit_types,unit_types_key, "VOM"),# may also be 'fuel' for some data but that conflicts with Fueltype
@@ -193,7 +199,7 @@ def main(ppm,tdr,spd,
                         "storage_connection",
                         [
                             unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
-                            "elec"
+                            "electricity"
                         ],
                         None
                     ]
@@ -203,7 +209,7 @@ def main(ppm,tdr,spd,
                         "storage_connection",
                         [
                             unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
-                            "elec"
+                            "electricity"
                         ],
                         "efficiency_in",
                         year_data(unit, unit_types,unit_types_key, "efficiency", modifier=1/sqrt(2)),
@@ -213,7 +219,7 @@ def main(ppm,tdr,spd,
                         "storage_connection",
                         [
                             unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
-                            "elec"
+                            "electricity"
                         ],
                         "efficiency_out",
                         year_data(unit, unit_types,unit_types_key, "efficiency", modifier=1/sqrt(2)),
@@ -223,7 +229,7 @@ def main(ppm,tdr,spd,
                         "storage_connection",
                         [
                             unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
-                            "elec"
+                            "electricity"
                         ],
                         "investment",
                         year_data(unit, unit_types,unit_types_key, "investment"),
@@ -233,7 +239,7 @@ def main(ppm,tdr,spd,
                         "storage_connection",
                         [
                             unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
-                            "elec"
+                            "electricity"
                         ],
                         "fixed_cost",
                         year_data(unit, unit_types,unit_types_key, "FOM"),
@@ -249,10 +255,10 @@ def main(ppm,tdr,spd,
         target_db.purge_items('entity')
         target_db.refresh_session()
         target_db.commit_session("Purged entities and parameter values")
-        api.import_data(target_db, **jaif)
+        importlog = api.import_data(target_db, **jaif)
         target_db.refresh_session()
         target_db.commit_session("Added pypsa data")
-    return
+    return importlog
 
 def map_powerplants_costs(unit, unit_types):
     unit_types_keys={}
@@ -305,4 +311,5 @@ if __name__ == "__main__":
     tdr = {str(2020+(i-2)*10):sys.argv[i] for i in range(2,len(sys.argv)-1)} # pypsa technology data repository
     spd = sys.argv[-1] # spine database preformatted with an intermediate format for the mopo project (including the "Base" alternative)
 
-    main(ppm,tdr,spd)
+    importlog = main(ppm,tdr,spd)
+    pprint.pprint(importlog)# debug line
