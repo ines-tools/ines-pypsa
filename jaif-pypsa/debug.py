@@ -1,4 +1,4 @@
-import pprint
+from pprint import pprint
 import csv
 
 data_path='/home/u0102409/MyApps/pypsa/pypsa-eur data/'
@@ -18,7 +18,7 @@ for year,path in tdr.items():
                 unit_types[year][line[0]]={}
             unit_types[year][line[0]][line[1]]=line[2]
             #unit_types[year][line[0]][line[1]+'_description']=line[3]+' '+line[4]+' '+line[5]
-#pprint.pprint(unit_types)
+#pprint(unit_types)
 
 # check consistency
 for unit_type in unit_types.values():
@@ -32,10 +32,15 @@ ppm=data_path+'powerplants.csv'
 with open(ppm, mode='r') as file:
     unit_instances = list(csv.DictReader(file))
 unitlist=[]
+otherlist=[]
 for unit in unit_instances:
     if unit["Technology"] not in unitlist:
         unitlist.append(unit["Technology"])
+    if unit["Fueltype"] == 'Other' and (unit["Technology"],unit["Set"]) not in otherlist:
+        otherlist.append((unit["Technology"],unit["Set"]))
 print(unitlist)
+print()
+pprint(otherlist)
 
 # from print statement in ppmtdr_to_jaif
 # used to identify elements for the 'exclude' list

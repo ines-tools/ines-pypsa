@@ -5,7 +5,7 @@
 import sys
 import csv
 from math import sqrt
-import pprint
+from pprint import pprint
 import pycountry
 from fuzzywuzzy.process import extractOne
 import spinedb_api as api
@@ -34,7 +34,7 @@ def main(ppm,tdr,spd,
         "entities":[
             [
                 "commodity",
-                "electricity",
+                "elec",
                 None
             ]
         ],
@@ -44,8 +44,19 @@ def main(ppm,tdr,spd,
     commoditylist = []
     #unit_type_key_list = [] # for debugging
     for unit in unit_instances:
+        # some cleaning
         if unit["DateOut"]:
             unit["lifetime"] = max(0,float(unit["DateOut"])-float(yearzero))
+        if unit["Fueltype"]=='Other':
+            if unit["Set"]=='Store':
+                # most likely a battery, marine is filtered out anyway
+                unit["Fueltype"]='elec'
+                unit["Technology"]='Battery'
+            elif unit["Technology"]=='CCGT':
+                unit["Fueltype"]='Natural Gas'
+            else:
+                #most likely gas
+                unit["Fueltype"]='Natural Gas'
         if unit["Fueltype"] not in exclude and unit["Country"] not in exclude and unit["Set"] not in exclude and unit["Technology"] not in exclude:
             unit_types_key=map_powerplants_costs(unit, unit_types)
             #keystring = unit["Fueltype"] + ' ' + unit["Technology"] + ' ' + str(unit_types_key)
@@ -67,7 +78,7 @@ def main(ppm,tdr,spd,
                     [
                         "node",
                         [
-                            "electricity",
+                            "elec",
                             countrycode,
                         ],
                         None
@@ -94,10 +105,10 @@ def main(ppm,tdr,spd,
                 commoditylist.append(unit["Fueltype"])
                 jaif["entities"].append([
                     "commodity",
-                    unit["Fueltype"],
+                    map_fuel(unit["Fueltype"]),
                     None
                 ])
-            # storage or technology
+            # power plant
             if unit["Set"]=="PP":
                 jaif["entities"].extend([
                     [
@@ -108,7 +119,7 @@ def main(ppm,tdr,spd,
                     [
                         "commodity__to_technology",
                         [
-                            unit["Fueltype"],
+                            map_fuel(unit["Fueltype"]),
                             unit["Technology"]+"|"+countrycode+"|"+unit["Name"]
                         ],
                         None
@@ -125,7 +136,7 @@ def main(ppm,tdr,spd,
                         "technology__to_commodity",
                         [
                             unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
-                            "electricity"
+                            "elec"
                         ],
                         None
                     ],
@@ -159,7 +170,7 @@ def main(ppm,tdr,spd,
                         "technology__to_commodity",
                         [
                             unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
-                            "electricity"
+                            "elec"
                         ],
                         "investment",
                         year_data(unit, unit_types,unit_types_key, "investment"),
@@ -169,7 +180,7 @@ def main(ppm,tdr,spd,
                         "technology__to_commodity",
                         [
                             unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
-                            "electricity"
+                            "elec"
                         ],
                         "fixed_cost",
                         year_data(unit, unit_types,unit_types_key, "FOM"),
@@ -179,15 +190,16 @@ def main(ppm,tdr,spd,
                         "technology__to_commodity",
                         [
                             unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
-                            "electricity"
+                            "elec"
                         ],
                         "operational_cost",
                         year_data(unit, unit_types,unit_types_key, "VOM"),# may also be 'fuel' for some data but that conflicts with Fueltype
                         "Base"
                     ],
                 ])
-                #pprint.pprint(year_data(unit, unit_types,unit_types_key, "efficiency"))
+                #pprint(year_data(unit, unit_types,unit_types_key, "efficiency"))
             #if unit["Set"]=="CHP": # skip
+            # storage
             if unit["Set"]=="Store":
                 jaif["entities"].extend([
                     [
@@ -199,17 +211,35 @@ def main(ppm,tdr,spd,
                         "storage_connection",
                         [
                             unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
-                            "electricity"
+                            "elec"
                         ],
                         None
-                    ]
+                    ],
+                    [
+                        "storage__region",
+                        [
+                            unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
+                            countrycode
+                        ],
+                        None
+                    ],
                 ])
                 jaif["parameter_values"].extend([
+                    [
+                        "storage__region",
+                        [
+                            unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
+                            countrycode
+                        ],
+                        "storages_existing",
+                        onetime_data(unit, unit_types[yearzero][unit_types_key[yearzero]], "capacity"),
+                        "Base"
+                    ],
                     [
                         "storage_connection",
                         [
                             unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
-                            "electricity"
+                            "elec"
                         ],
                         "efficiency_in",
                         year_data(unit, unit_types,unit_types_key, "efficiency", modifier=1/sqrt(2)),
@@ -219,7 +249,7 @@ def main(ppm,tdr,spd,
                         "storage_connection",
                         [
                             unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
-                            "electricity"
+                            "elec"
                         ],
                         "efficiency_out",
                         year_data(unit, unit_types,unit_types_key, "efficiency", modifier=1/sqrt(2)),
@@ -229,7 +259,7 @@ def main(ppm,tdr,spd,
                         "storage_connection",
                         [
                             unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
-                            "electricity"
+                            "elec"
                         ],
                         "investment",
                         year_data(unit, unit_types,unit_types_key, "investment"),
@@ -239,7 +269,7 @@ def main(ppm,tdr,spd,
                         "storage_connection",
                         [
                             unit["Technology"]+"|"+countrycode+"|"+unit["Name"],
-                            "electricity"
+                            "elec"
                         ],
                         "fixed_cost",
                         year_data(unit, unit_types,unit_types_key, "FOM"),
@@ -247,7 +277,7 @@ def main(ppm,tdr,spd,
                     ],
                 ])
 
-    #pprint.pprint(unit_type_key_list)
+    #pprint(unit_type_key_list)
     # save to spine database
     with api.DatabaseMapping(spd) as target_db:
         # empty database except for intermediary format and alternatives
@@ -277,7 +307,7 @@ def map_powerplants_costs(unit, unit_types):
         unit_types_keys[year] = unit_type_key
     return unit_types_keys
 
-def year_data(unit, unit_types, unit_types_keys, parameter, modifier=1):
+def year_data(unit, unit_types, unit_types_keys, parameter, modifier=1.0):
     parameter_value = {
         "index_type": "str",
         "rank": 1,
@@ -292,19 +322,73 @@ def year_data(unit, unit_types, unit_types_keys, parameter, modifier=1):
     parameter_value["data"] = data
     return parameter_value
 
-def onetime_data(unit, unit_type_parameters, parameter, modifier=1):
+def onetime_data(unit, unit_type_parameters, parameter, modifier=1.0):
     datavalue = None
     search_parameter = extractOne(parameter, unit.keys(), score_cutoff=80)
     if search_parameter:
         datavalue = unit[search_parameter[0]]
-    if not datavalue:
+    if not datavalue or datavalue=='':
         search_parameter = extractOne(parameter, unit_type_parameters.keys(), score_cutoff=80)
         if search_parameter:
             datavalue = unit_type_parameters[search_parameter[0]]
-    if datavalue:
-        datavalue = datavalue*modifier
+    try:
+        datavalue = float(datavalue)*modifier
+    except:
+        datavalue = None
     return datavalue
 
+def map_fuel(fuel_pypsa):
+    fuel_pypsa_jaif = {
+        'CH4':'fossil-CH4',
+        'fossil-CH4':'fossil-CH4',
+        'methane':'fossil-CH4',
+        'gas':'fossil-CH4',
+        'natural gas':'fossil-CH4',
+        'CO2':'CO2',
+        'carbon':'CO2',
+        'carbon dioxide':'CO2',
+        'H2':'H2',
+        'hydrogen':'H2',
+        'U-92':'U-92',
+        'nuclear':'U-92',
+        'biogas':'bio',
+        'biomass':'bio',
+        'coal':'coal',
+        'crude':'crude',
+        'oil':'crude',
+        'waste':'waste',
+    }
+    fuel_jaif = extractOne(fuel_pypsa,fuel_pypsa_jaif.keys(),score_cutoff=80)
+    if fuel_jaif:
+        fuel_jaif = fuel_jaif[0]
+    else:
+        fuel_jaif = fuel_pypsa
+    return fuel_jaif
+
+def map_technology(technology_pypsa):
+    technology_pypsa_jaif = {
+        'large-battery':'large-battery',
+        'battery':'large-battery',
+        'CCGT':'CCGT',
+        'CCGT+CC':'CCGT+CC',
+        'OCGT':'OCGT',
+        'OCGT+CC':'OCGT+CC',
+        'fuelcell':'fuelcell',
+        'geothermal':'geothermal',
+        'hydro-turbine':'hydro-turbine',
+        'hydro':'hydro-turbine',
+        'run-of-river':'hydro',
+        'nuclear':'nuclear-3',#nuclear-4
+        'oil-eng':'oil-eng',
+        'wasteST':'wasteST',
+        'waste':'wasteST',
+    }
+    technology_jaif = extractOne(technology_pypsa,technology_pypsa_jaif.keys(),score_cutoff=80)
+    if technology_jaif:
+        technology_jaif = technology_jaif[0]
+    else:
+        technology_jaif = technology_pypsa
+    return technology_jaif
 
 if __name__ == "__main__":
     ppm = sys.argv[1] # pypsa power plant matching
@@ -312,4 +396,4 @@ if __name__ == "__main__":
     spd = sys.argv[-1] # spine database preformatted with an intermediate format for the mopo project (including the "Base" alternative)
 
     importlog = main(ppm,tdr,spd)
-    #pprint.pprint(importlog)# debug line
+    #pprint(importlog)# debug line
