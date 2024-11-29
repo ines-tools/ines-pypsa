@@ -1,5 +1,6 @@
-from pprint import pprint
 import csv
+from pprint import pprint
+from ppmtdr_to_jaif import clean_unit, map_fuel, map_technology
 
 data_path='/home/u0102409/MyApps/pypsa/pypsa-eur data/'
 tdr={
@@ -31,16 +32,30 @@ ppm=data_path+'powerplants.csv'
 
 with open(ppm, mode='r') as file:
     unit_instances = list(csv.DictReader(file))
+#pprint(unit_instances)
+exclude=['Other','Waste','Geothermal','hydro','Hydro','CHP','Reservoir', 'Run-Of-River', 'Pumped Storage', 'PV','Pv','CSP','Wind', 'Onshore', 'Offshore', 'Marine']
 unitlist=[]
 otherlist=[]
+gislist=[]
+giskeys = ['\ufeffid', 'Name', 'Fueltype', 'Technology', 'Set', 'Country', 'Capacity', 'Efficiency', 'lifetime', 'lat', 'lon']
 for unit in unit_instances:
     if unit["Technology"] not in unitlist:
         unitlist.append(unit["Technology"])
     if unit["Fueltype"] == 'Other' and (unit["Technology"],unit["Set"]) not in otherlist:
         otherlist.append((unit["Technology"],unit["Set"]))
+    if unit["Fueltype"] not in exclude and unit["Country"] not in exclude and unit["Set"] not in exclude and unit["Technology"] not in exclude:
+        clean_unit(unit,'2020')
+        unit["Fueltype"] = map_fuel(unit["Fueltype"])
+        unit["Technology"] = map_technology(unit["Technology"])
+        gislist.append({parameter:unit[parameter] for parameter in giskeys})
 print(unitlist)
-print()
-pprint(otherlist)
+#print()
+#pprint(otherlist)
+
+with open('GIS.csv', 'w', newline='') as gis_file:
+    dict_writer = csv.DictWriter(gis_file, giskeys)
+    dict_writer.writeheader()
+    dict_writer.writerows(gislist)
 
 # from print statement in ppmtdr_to_jaif
 # used to identify elements for the 'exclude' list
