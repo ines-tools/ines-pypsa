@@ -406,8 +406,6 @@ def map_fuel(fuel_pypsa):
 def map_technology(technology_pypsa):
     technology_pypsa_jaif = {
         'PP':'PP',
-        '':'PP',#generic name for unknown plants
-        ' ':'PP',
         'large-battery':'large-battery',
         'battery':'large-battery',
         'CCGT':'CCGT',
@@ -428,6 +426,8 @@ def map_technology(technology_pypsa):
         'CE':'CE',
         'combustion engine':'CE',
     }
+    if technology_pypsa == '' or technology_pypsa == ' ':
+        technology_pypsa = 'PP' #assume generic power plant for unknown units
     technology_jaif = extractOne(technology_pypsa,technology_pypsa_jaif.keys(),score_cutoff=90)
     if technology_jaif:
         technology_jaif = technology_pypsa_jaif[technology_jaif[0]]
