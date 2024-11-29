@@ -465,66 +465,6 @@ def onetime_data(unit, unit_type_parameters, parameter, modifier=1.0):
         datavalue = None
     return datavalue
 
-def map_fuel(fuel_pypsa):
-    fuel_pypsa_jaif = {
-        'CH4':'fossil-CH4',
-        'fossil-CH4':'fossil-CH4',
-        'methane':'fossil-CH4',
-        'gas':'fossil-CH4',
-        'natural gas':'fossil-CH4',
-        'CO2':'CO2',
-        'carbon':'CO2',
-        'carbon dioxide':'CO2',
-        'H2':'H2',
-        'hydrogen':'H2',
-        'U-92':'U-92',
-        'nuclear':'U-92',
-        'biogas':'bio',
-        'biomass':'bio',
-        'coal':'coal',
-        'crude':'crude',
-        'oil':'crude',
-        'waste':'waste',
-    }
-    fuel_jaif = extractOne(fuel_pypsa,fuel_pypsa_jaif.keys(),score_cutoff=80)
-    if fuel_jaif:
-        fuel_jaif = fuel_pypsa_jaif[fuel_jaif[0]]
-    else:
-        fuel_jaif = fuel_pypsa
-    return fuel_jaif
-
-def map_technology(technology_pypsa):
-    technology_pypsa_jaif = {
-        'PP':'PP',
-        '':'PP',#generic name for unknown plants
-        ' ':'PP',
-        'large-battery':'large-battery',
-        'battery':'large-battery',
-        'CCGT':'CCGT',
-        'CCGT+CC':'CCGT+CC',
-        'OCGT':'OCGT',
-        'OCGT+CC':'OCGT+CC',
-        'fuelcell':'fuelcell',
-        'geothermal':'geothermal',
-        'hydro-turbine':'hydro-turbine',
-        'hydro':'hydro-turbine',
-        'run-of-river':'hydro',
-        'nuclear':'nuclear-3',#nuclear-4
-        'oil-eng':'oil-eng',
-        'wasteST':'wasteST',
-        'waste':'wasteST',
-        'ST':'ST',
-        'steam turbine':'ST',
-        'CE':'CE',
-        'combustion engine':'CE',
-    }
-    technology_jaif = extractOne(technology_pypsa,technology_pypsa_jaif.keys(),score_cutoff=90)
-    if technology_jaif:
-        technology_jaif = technology_pypsa_jaif[technology_jaif[0]]
-    else:
-        technology_jaif = technology_pypsa
-    return technology_jaif
-
 if __name__ == "__main__":
     ppm = sys.argv[1] # pypsa power plant matching
     tdr = {str(2020+(i-2)*10):sys.argv[i] for i in range(2,len(sys.argv)-1)} # pypsa technology data repository
