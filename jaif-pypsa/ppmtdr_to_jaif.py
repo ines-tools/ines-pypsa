@@ -62,6 +62,7 @@ def main(ppm,tdr,spd,
             #print(country)
             countrycode = country.alpha_2
             unit_name = name_unit(unit, countrycode, aggregate=aggregate)
+            fuel_name = map_fuel(unit["Fueltype"])
             if countrycode not in countrycodelist:
                 countrycodelist.append(countrycode)
                 jaif["entities"].extend([
@@ -100,9 +101,20 @@ def main(ppm,tdr,spd,
                 commoditylist.append(unit["Fueltype"])
                 jaif["entities"].append([
                     "commodity",
-                    map_fuel(unit["Fueltype"]),
+                    fuel_name,
                     None
                 ])
+                """
+                jaif["parameter_values"].extend([
+                    [
+                        "commodity",
+                        fuel_name,
+                        "commodity_price",
+                        year_data(unit, unit_types,unit_types_key, "VOM"),
+                        "Base"
+                    ],
+                ])
+                """
             # power plant
             if unit["Set"]=="PP":
                 if unit_name not in technologylist:
@@ -116,7 +128,7 @@ def main(ppm,tdr,spd,
                         [
                             "commodity__to_technology",
                             [
-                                map_fuel(unit["Fueltype"]),
+                                fuel_name,
                                 unit_name
                             ],
                             None
