@@ -299,7 +299,8 @@ def main(ppm,tdr,spd,
 
 def aggregate_units(unit_instances, yearzero,
     keys = ["Fueltype","Technology","Set","Country"],
-    aggregate_parameters = ["Capacity", "Efficiency", "lifetime"]
+    average_parameters = ["Efficiency", "lifetime"],
+    sum_parameters = ["Capacity"]
 ):
     aggregated_units = {}
     for unit in unit_instances:
@@ -309,11 +310,16 @@ def aggregate_units(unit_instances, yearzero,
             aggregated_units[unit_tuple] = unit
         else:
             aggregated_unit = aggregated_units[unit_tuple]
-            for parameter in aggregate_parameters:
+            for parameter in average_parameters:
                 if aggregated_unit[parameter] and unit[parameter]:
                     aggregated_unit[parameter] = (float(aggregated_unit[parameter]) + float(unit[parameter]))/2
                 elif unit[parameter]:
-                    aggregated_unit[parameter] = unit[parameter]
+                    aggregated_unit[parameter] = float(unit[parameter])
+            for parameter in sum_parameters:
+                if aggregated_unit[parameter] and unit[parameter]:
+                    aggregated_unit[parameter] = float(aggregated_unit[parameter]) + float(unit[parameter])
+                elif unit[parameter]:
+                    aggregated_unit = float(unit[parameter])
     return aggregated_units.values()
 
 def clean_unit(unit, yearzero):
