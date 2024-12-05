@@ -31,7 +31,7 @@ def main(ppm,tdr,spd,
         unit_instances = list(csv.DictReader(file))
     #print(unit_instances)
     if aggregate:
-        unit_instances = aggregate_units(unit_instances, yearzero)
+        unit_instances = aggregate_units(unit_instances, yearzero, use_maps=True)
     # format data
     jaif = { # dictionary for intermediate data format
         "entities":[
@@ -57,40 +57,28 @@ def main(ppm,tdr,spd,
             #if keystring not in unit_type_key_list:
                 #unit_type_key_list.append(keystring)
             # region
-            #print(unit["Country"])
-            country = pycountry.countries.search_fuzzy(unit["Country"])[0]
-            #print(country)
-            countrycode = country.alpha_2
-            unit_name = name_unit(unit, countrycode, aggregate=aggregate)
+            unit_name = name_unit(unit, aggregate=aggregate)
             fuel_name = map_fuel(unit["Fueltype"])
-            if countrycode not in countrycodelist:
-                countrycodelist.append(countrycode)
+            if unit["Country"] not in countrycodelist:
+                countrycodelist.append(unit["Country"])
                 jaif["entities"].extend([
                     [
                         "region",
-                        countrycode,
-                        None
-                    ],
-                    [
-                        "node",
-                        [
-                            "elec",
-                            countrycode,
-                        ],
+                        unit["Country"],
                         None
                     ],
                 ])
                 jaif["parameter_values"].extend([
                     [
                         "region",
-                        countrycode,
+                        unit["Country"],
                         "type",
                         "onshore",
                         "Base"
                     ],
                     [
                         "region",
-                        countrycode,
+                        unit["Country"],
                         "GIS_level",
                         "PECD1",
                         "Base"
@@ -141,15 +129,17 @@ def main(ppm,tdr,spd,
                             ],
                             None
                         ],
+                        [
+                            "commodity__technology__commodity",
+                            [
+                                fuel_name,
+                                unit_name,
+                                "elec"
+                            ],
+                            None
+                        ],
                     ])
                     jaif["parameter_values"].extend([
-                        [
-                            "technology",
-                            unit_name,
-                            "efficiency",
-                            year_data(unit, unit_types,unit_types_key, "efficiency"),
-                            "Base"
-                        ],
                         [
                             "technology",
                             unit_name,
@@ -163,7 +153,7 @@ def main(ppm,tdr,spd,
                                 unit_name,
                                 "elec"
                             ],
-                            "investment",
+                            "investment_cost",
                             year_data(unit, unit_types,unit_types_key, "investment"),
                             "Base"
                         ],
@@ -187,13 +177,24 @@ def main(ppm,tdr,spd,
                             year_data(unit, unit_types,unit_types_key, "VOM"),# may also be 'fuel' for some data but that conflicts with Fueltype
                             "Base"
                         ],
+                        [
+                            "commodity__technology__commodity",
+                            [
+                                fuel_name,
+                                unit_name,
+                                "elec"
+                            ],
+                            "efficiency",
+                            year_data(unit, unit_types,unit_types_key, "efficiency"),
+                            "Base"
+                        ],
                     ])
                 jaif["entities"].extend([
                     [
                         "technology__region",
                         [
                             unit_name,
-                            countrycode
+                            unit["Country"]
                         ],
                         None
                     ],
@@ -203,7 +204,7 @@ def main(ppm,tdr,spd,
                         "technology__region",
                         [
                             unit_name,
-                            countrycode
+                            unit["Country"]
                         ],
                         "units_existing",
                         onetime_data(unit, unit_types[yearzero][unit_types_key[yearzero]], "capacity"),
@@ -258,7 +259,7 @@ def main(ppm,tdr,spd,
                                 unit_name,
                                 "elec"
                             ],
-                            "investment",
+                            "investment_cost",
                             year_data(unit, unit_types,unit_types_key, "investment"),
                             "Base"
                         ],
@@ -278,7 +279,7 @@ def main(ppm,tdr,spd,
                         "storage__region",
                         [
                             unit_name,
-                            countrycode
+                            unit["Country"]
                         ],
                         None
                     ],
@@ -288,7 +289,7 @@ def main(ppm,tdr,spd,
                         "storage__region",
                         [
                             unit_name,
-                            countrycode
+                            unit["Country"]
                         ],
                         "storages_existing",
                         onetime_data(unit, unit_types[yearzero][unit_types_key[yearzero]], "capacity"),
@@ -309,16 +310,28 @@ def main(ppm,tdr,spd,
         target_db.commit_session("Added pypsa data")
     return importlog
 
-def aggregate_units(unit_instances, yearzero,
-    keys = ["Fueltype","Technology","Set","Country"],
+def aggregate_units(unit_instances, yearzero, use_maps=False,
+    keys = ["Fueltype","Set","Country"],#"Technology",
     average_parameters = ["Efficiency", "lifetime"],
     sum_parameters = ["Capacity"]
 ):
     aggregated_units = {}
     for unit in unit_instances:
-        unit_tuple = tuple([unit[key] for key in keys])
         clean_unit(unit, yearzero)
+        unit_tuple = tuple([unit[key] for key in keys])
+        if use_maps:
+            unit_list = []
+            for key in keys:
+                if key == "Fueltype":
+                    unit_list.append(map_fuel(unit[key]))
+                elif key == "Technology":
+                    #unit_list.append(map_technology(unit[key]))
+                    unit_list.append(map_fuel_technology(map_fuel(unit["Fueltype"]),map_technology(unit["Technology"])))
+                else:
+                    unit_list.append(unit[key])
+            unit_tuple = tuple(unit_list)
         if unit_tuple not in aggregated_units.keys():
+            #print(unit_tuple)
             aggregated_units[unit_tuple] = unit
         else:
             aggregated_unit = aggregated_units[unit_tuple]
@@ -335,6 +348,10 @@ def aggregate_units(unit_instances, yearzero,
     return aggregated_units.values()
 
 def clean_unit(unit, yearzero):
+    #print(unit["Country"])
+    country = pycountry.countries.search_fuzzy(unit["Country"])[0]
+    #print(country)
+    unit["Country"] = country.alpha_2
     if unit["Fueltype"]=='Other':
         if unit["Set"]=='Store':
             # most likely a battery, marine is filtered out anyway
@@ -356,18 +373,18 @@ def clean_unit(unit, yearzero):
             unit[parameter] = None
     return # existing dictionary is modified
 
-def name_unit(unit, countrycode, aggregate=False,
+def name_unit(unit, aggregate=False,
     keys = ["Technology", "Country", "Name"],
     separator = " "
 ):
     if aggregate:
-        keys = ["Fueltype", "Technology"]
+        keys = ["FuelTechnology"]
     unit_name = ''
     for position,key in enumerate(keys):
         if position != 0:
             unit_name += separator
-        if key == "Country":
-            unit_name += countrycode
+        if key == "FuelTechnology":
+            unit_name += map_fuel_technology(map_fuel(unit["Fueltype"]),map_technology(unit["Technology"]))
         elif key == "Technology":
             unit_name += map_technology(unit["Technology"])
         elif key == "Fueltype":
@@ -395,24 +412,27 @@ def map_powerplants_costs(unit, unit_types):
 
 def map_fuel(fuel_pypsa):
     fuel_pypsa_jaif = {
-        'CH4':'fossil-CH4',
-        'fossil-CH4':'fossil-CH4',
-        'methane':'fossil-CH4',
-        'gas':'fossil-CH4',
-        'natural gas':'fossil-CH4',
+        'CH4':'CH4',
+        'methane':'CH4',
+        'gas':'CH4',
+        'natural gas':'CH4',
         'CO2':'CO2',
         'carbon':'CO2',
         'carbon dioxide':'CO2',
         'H2':'H2',
         'hydrogen':'H2',
+        'hydro':'hydro',
+        'water':'hydro',
         'U-92':'U-92',
         'nuclear':'U-92',
         'biogas':'bio',
         'biomass':'bio',
-        'coal':'coal',
-        'crude':'crude',
-        'oil':'crude',
         'waste':'waste',
+        'coal':'coal',
+        'hard coal':'coal',
+        'lignite':'coal',
+        'crude':'HC',
+        'oil':'HC',
     }
     fuel_jaif = extractOne(fuel_pypsa,fuel_pypsa_jaif.keys(),score_cutoff=80)
     if fuel_jaif:
@@ -430,6 +450,7 @@ def map_technology(technology_pypsa):
         'CCGT+CC':'CCGT+CC',
         'OCGT':'OCGT',
         'OCGT+CC':'OCGT+CC',
+        'SCPC':'SCPC',
         'fuelcell':'fuelcell',
         'geothermal':'geothermal',
         'hydro-turbine':'hydro-turbine',
@@ -439,6 +460,7 @@ def map_technology(technology_pypsa):
         'oil-eng':'oil-eng',
         'wasteST':'wasteST',
         'waste':'wasteST',
+        'bioST':'bioST',
         'ST':'ST',
         'steam turbine':'ST',
         'CE':'CE',
@@ -452,6 +474,22 @@ def map_technology(technology_pypsa):
     else:
         technology_jaif = technology_pypsa
     return technology_jaif
+
+def map_fuel_technology(fuel, technology):
+    fuel_technology = {
+        'CH4': 'CCGT',
+        'bio': 'bioST',
+        'coal': 'SCPC',
+        'HC': 'oil-eng',
+        'U-92': 'nuclear',
+        'waste': 'ST',
+    }
+    tech = extractOne(fuel,fuel_technology.keys(),score_cutoff=90)
+    if tech:
+        tech = fuel_technology[tech[0]]
+    else:
+        tech = technology
+    return tech
 
 def year_data(unit, unit_types, unit_types_keys, parameter, modifier=1.0):
     parameter_value = {
