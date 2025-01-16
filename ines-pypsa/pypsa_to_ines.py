@@ -177,7 +177,7 @@ def conversion_configuration(conversions = ['pypsa_to_ines_entities', 'pypsa_to_
                                 }
                             },                          
                         }
-                    },
+                    }
                 }
             if convertname == 'pypsa_to_ines_parameters_to_relationships':
                 convertdict = {
@@ -266,14 +266,15 @@ def add_time_structure(source_db,target_db):
     step_length.append(diff)
     time_series = api.TimeSeriesVariableResolution(snapshots.values, np.array(step_length), ignore_year = False, repeat=False, index_name="time step")
     target_db = ines_transform.add_item_to_DB(target_db, 'timeline', [settings["Alternative"], ('Time',), 'system'], time_series)
-    #resolution
-    #This is just the difference between the first two timesteps ie. assumes constant resolution
-    minutes_diff = (snapshots.values[1].value-snapshots.values[0].value).total_seconds() / 60.0
-    ines_transform.assert_success(target_db.add_entity_item(entity_class_name='temporality',entity_byname=('resolution',)), warn=True)
-    target_db = ines_transform.add_item_to_DB(target_db, 'resolution', [settings["Alternative"], ('resolution',), 'temporality'], minutes_diff)
+    
 
     #periods
     ines_transform.assert_success(target_db.add_entity_item(entity_class_name='solve_pattern',entity_byname=('solve',)), warn=True)
+    #resolution
+    #This is just the difference between the first two timesteps ie. assumes constant resolution
+    hours_diff = (snapshots.values[1].value-snapshots.values[0].value).total_seconds() / 60.0/60.0
+    duration = api.Duration(str(int(hours_diff))+"h")
+    target_db = ines_transform.add_item_to_DB(target_db, 'time_resolution', [settings["Alternative"], ('solve',), 'solve_pattern'], duration)
     periods = ines_transform.get_parameter_from_DB(source_db,"investment_periods", alt_ent_class_source)
     if periods: #pypsa periods are always years
         target_db = ines_transform.add_item_to_DB(target_db, 'period', [settings["Alternative"], ('solve',), 'solve_pattern'], periods)
@@ -286,7 +287,7 @@ def add_time_structure(source_db,target_db):
                     if not first:
                         first = i
                     last = i
-            duration_hours = (datetime.fromisoformat(last)-datetime.fromisoformat(first)).total_seconds() / 60.0/60.0 + minutes_diff/60.0
+            duration_hours = (datetime.fromisoformat(last)-datetime.fromisoformat(first)).total_seconds() / 60.0/60.0 + hours_diff
             duration = api.Duration(str(duration_hours)+"h")
             target_db = ines_transform.add_item_to_DB(target_db, 'duration', [settings["Alternative"], ('base_period',), 'period'], duration)
             target_db = ines_transform.add_item_to_DB(target_db, 'start_time', [settings["Alternative"], ('base_period',), 'period'], first )
@@ -328,9 +329,30 @@ def create_market_nodes(source_db, target_db):
                 target_db = ines_transform.add_item_to_DB(target_db, 'co2_content', alt_ent_class_market, co2_emissions)
                 target_db = ines_transform.add_item_to_DB(target_db, 'node_type', alt_ent_class_market, 'commodity')
                 market_carrier_list.append(source_entity["name"])
-    #add c02 limit?
-    #should be added to the ines format
-    
+    #add c02 limit
+    period__limit = {}
+    for global_constraint in target_db.get_entity_items(entity_class_name='GlobalConstraint'):
+        alt_ent_class_source = [settings["Alternative"], global_constraint["entity_byname"], 'GlobalConstraint']
+        carrier_attribute = ines_transform.get_parameter_from_DB(source_db,"carrier_attribute", alt_ent_class_source)
+        if carrier_attribute == 'co2_emissions':
+            sense = ines_transform.get_parameter_from_DB(source_db,"sense", alt_ent_class_source)
+            if sense == '<=':
+                period = ines_transform.get_parameter_from_DB(source_db,"investment_period", alt_ent_class_source)
+                co2_limit = ines_transform.get_parameter_from_DB(source_db,"constant", alt_ent_class_source)
+                if period and not math.isnan(period):
+                    period__limit[period] = co2_limit
+                else:
+                    ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set',entity_byname=("co2")), warn=True)
+                    target_db = ines_transform.add_item_to_DB(target_db, 'co2_max_cumulative', alt_ent_class_market, co2_limit)
+                    for market_node in market_carrier_list:
+                        ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__node',entity_byname=("co2",market_node)), warn=True)
+    if period__limit:
+        co2_map = api.Map(list(period__limit.keys()),list(period__limit.values()))
+        ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set',entity_byname=("co2_periodic")), warn=True)
+        target_db = ines_transform.add_item_to_DB(target_db, 'co2_max_period', alt_ent_class_market, co2_map)
+        for market_node in market_carrier_list:
+            ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__node',entity_byname=("co2_periodic",market_node)), warn=True)
+            
     return target_db, market_carrier_list
 
 def create_market_relationships(source_db, target_db, market_carrier_list):
@@ -527,11 +549,6 @@ def map_storageUnits_to_nodes_and_units(source_db,target_db):
         if max_hours > 0:
             p_nom_extendable = ines_transform.get_parameter_from_DB(source_db,"p_nom_extendable", alt_ent_class_source)
 
-            #ines does not have storage start-end state methods? 
-            cyclic_state_of_charge =ines_transform.get_parameter_from_DB(source_db,"cyclic_state_of_charge", alt_ent_class_source)
-            cyclic_state_of_charge_per_period =ines_transform.get_parameter_from_DB(source_db,"cyclic_state_of_charge_per_period", alt_ent_class_source)
-
-
             #add entity
             ines_transform.assert_success(target_db.add_entity_item(entity_class_name='unit',entity_byname=unit1_byname), warn=True)
             ines_transform.assert_success(target_db.add_entity_item(entity_class_name='node',entity_byname=node_byname), warn=True)
@@ -545,12 +562,17 @@ def map_storageUnits_to_nodes_and_units(source_db,target_db):
             node_param_dict = {
                 'inflow': 'flow_profile',
                 'spill_cost': 'penalty_downward',
-                'state_of_charge': 'storage_state_fix',
             }
             for name, target_name in node_param_dict.items():
                 value = ines_transform.get_parameter_from_DB(source_db, name, alt_ent_class_source)
                 target_db = ines_transform.add_item_to_DB(target_db, target_name, alt_ent_class_storage, value)
             
+            standing_loss = ines_transform.get_parameter_from_DB(source_db, 'standing_loss', alt_ent_class_source)
+            if standing_loss:
+                if standing_loss > 0:
+                    target_db = ines_transform.add_item_to_DB(target_db, 'storage_loss_from_stored_energy', alt_ent_class_storage, standing_loss)
+
+            target_db = add_storage_binding_and_fixing(source_db, target_db, alt_ent_class_source, alt_ent_class_storage)
             target_db = add_storage_capacities(source_db, target_db, alt_ent_class_source, alt_ent_class_storage)
             target_db = add_lifetime(source_db, target_db, alt_ent_class_source, alt_ent_class_storage, storage= True)
             target_db = add_entity_alternative(source_db, target_db, alt_ent_class_source, alt_ent_class_storage) 
@@ -841,16 +863,22 @@ def add_store_capacities_and_lifetimes(source_db, target_db):
         if min_units > 0.0:
             target_db = ines_transform.add_item_to_DB(target_db, 'storages_min_cumulative', alt_ent_class_target, min_units)
         
-        if e_nom_extendable and e_nom_max != math.inf:
-            if isinstance(e_nom_max,float):
-                value = 'cumulative_limits'
+        if e_nom_extendable: 
+            if isinstance(e_nom_max,float) and e_nom_max != math.inf:
+                method = 'cumulative_limits'
                 target_db = ines_transform.add_item_to_DB(target_db, 'storages_max_cumulative', alt_ent_class_target, max_units)
             else:
-                value = 'no_limits'
+                method = 'no_limits'
         else:    
-            value = 'not_allowed'
-        target_db = ines_transform.add_item_to_DB(target_db, 'storage_investment_method', alt_ent_class_target, value=value)
+            method = 'not_allowed'
+        
+        target_db = ines_transform.add_item_to_DB(target_db, 'storage_investment_method', alt_ent_class_target, method)
 
+        standing_loss = ines_transform.get_parameter_from_DB(source_db, 'standing_loss', alt_ent_class_source)
+        if standing_loss:
+            if standing_loss > 0:
+                target_db = ines_transform.add_item_to_DB(target_db, 'storage_loss_from_stored_energy', alt_ent_class_target, standing_loss)
+        target_db = add_storage_binding_and_fixing(source_db, target_db, alt_ent_class_source, alt_ent_class_target)
         target_db = add_lifetime(source_db, target_db, alt_ent_class_source, alt_ent_class_target, storage = True)
         target_db = ines_transform.add_item_to_DB(target_db, "storage_interest_rate", alt_ent_class_target, settings["Interest_rate"])
         target_db = calculate_investment_cost(source_db, target_db, alt_ent_class_source, alt_ent_class_target, storage = True)
@@ -996,7 +1024,34 @@ def add_inflow_methods_and_state_fix(target_db):
         target_db = ines_transform.add_item_to_DB(target_db, "storage_limit_method", alt_ent_class_source, profile_method)
     return target_db
 
+def add_storage_binding_and_fixing(source_db, target_db, alt_ent_class_source, alt_ent_class_target):        
+    if alt_ent_class_source[2] == 'Store':
+        bind_periodic = ines_transform.get_parameter_from_DB(source_db, "e_cyclic_per_period", alt_ent_class_source)
+        bind_solve = ines_transform.get_parameter_from_DB(source_db, "e_cyclic", alt_ent_class_source)
+        start_state = ines_transform.get_parameter_from_DB(source_db, "e_initial", alt_ent_class_source)
+        state_fix = None
+    elif alt_ent_class_source[2] == 'StorageUnit':
+        bind_periodic = ines_transform.get_parameter_from_DB(source_db, "cyclic_state_of_charge_per_period", alt_ent_class_source)
+        bind_solve = ines_transform.get_parameter_from_DB(source_db, "cyclic_state_of_charge", alt_ent_class_source)
+        start_state = ines_transform.get_parameter_from_DB(source_db, "state_of_charge_initial", alt_ent_class_source)
+        state_fix = ines_transform.get_parameter_from_DB(source_db, "state_of_charge_set", alt_ent_class_source)
+    if bind_periodic:
+        target_db = ines_transform.add_item_to_DB(target_db, "storage_state_binding_method", alt_ent_class_target, 'leap_over_within_period')
+    elif bind_solve:
+        target_db = ines_transform.add_item_to_DB(target_db, "storage_state_binding_method", alt_ent_class_target, 'leap_over_within_solve')
+    
+    if state_fix:
+        target_db = ines_transform.add_item_to_DB(target_db, "storage_state_fix_method", alt_ent_class_target, 'fix_all_timesteps')
+        target_db = ines_transform.add_item_to_DB(target_db, "storage_state_fix", alt_ent_class_target, state_fix)
+
+    if start_state and not bind_solve:
+        target_db = ines_transform.add_item_to_DB(target_db, "storage_state_fix_method", alt_ent_class_target, 'fix_start')
+        target_db = ines_transform.add_item_to_DB(target_db, "storage_state_fix", alt_ent_class_target, state_fix)
+
+    return target_db 
+
 #This is slightly problematic. Both investment cost and interest rate produced are wrong, but combinend they will produce the correct annuity
+#the captial cost of PyPSA is really the annuity
 def calculate_investment_cost(source_db, target_db, alt_ent_class_source, alt_ent_class_target, storage = False, max_hours = None):
     capital_cost = ines_transform.get_parameter_from_DB(source_db, "capital_cost", alt_ent_class_source)
     if max_hours: 
@@ -1005,7 +1060,7 @@ def calculate_investment_cost(source_db, target_db, alt_ent_class_source, alt_en
     if lifetime and isinstance(lifetime, float) and lifetime == math.inf:
         lifetime = settings["Infinite_lifetime"]
     r = settings["Interest_rate"]
-    investment_cost = capital_cost * r /(1- 1 /((1+r)**lifetime))
+    investment_cost = capital_cost /(r /(1 - (1 / (1+r))**lifetime))
     if storage:
         target_db = ines_transform.add_item_to_DB(target_db, "storage_investment_cost", alt_ent_class_target, investment_cost)
     else: 
@@ -1074,9 +1129,9 @@ if __name__ == "__main__":
         # assume the file to be used inside of Spine Toolbox
         url_db_in = sys.argv[1]
         url_db_out = sys.argv[2]
+        settings_path = 'pypsa_to_ines_settings.yaml'
         # open yaml files
         entities_to_copy,parameter_transforms,parameter_methods, parameters_to_relationships, parameters_to_parameters = conversion_configuration()
-        settings_path = 'pypsa_to_ines_settings.yaml'
         with open(settings_path,'r') as file:
             settings = yaml.safe_load(file) 
 

@@ -56,7 +56,6 @@ This includes also entities:
     - 'v_mag_pu_max'    placeholder
     - 'v_nom'
 - Carrier
-    - co2_emmissions: not in ines format yet
     - max_relative_growth: not in ines format yet
 - Generator
     - 'build_year'
@@ -108,30 +107,20 @@ This includes also entities:
 - StorageUnit:
     - 'build_year'
     - 'control'
-    - 'cyclic_state_of_charge'
-    - 'cyclic_state_of_charge_per_period'
     - 'marginal_cost_quadratic'
     - 'marginal_cost_storage'
     - 'p_set'
     - 'q_set'
     - 'sign'
-    - 'standing_loss'
-    - 'state_of_charge_initial'
-    - 'state_of_charge_initial_per_period'
     - 'type'  placeholder
 - Store
     - 'build_year'
     - 'control'
-    - 'e_cyclic'
-    - 'e_cyclic_per_period'
-    - 'e_initial'
-    - 'e_initial_per_period'
     - 'marginal_cost'
     - 'marginal_cost_quadratic'
     - 'marginal_cost_storage'
     - 'p_set'
     - 'q_set'
-    - 'standing_loss'
 
 ## development
 Currently only first version from PyPSA format to INES. Testing is still needed.
