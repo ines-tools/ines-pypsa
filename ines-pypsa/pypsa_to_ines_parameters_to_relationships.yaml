@@ -1,0 +1,24 @@
+Bus:
+  node:
+    set:
+      carrier:
+        position: 1
+Generator:
+  unit:
+    set:
+      carrier:
+        position: 1
+    to_node:
+      bus:
+        parameters:
+          capital_cost: investment_cost
+          marginal_cost: other_operational_cost
+          p_nom: capacity
+          ramp_limit_down: ramp_limit_down
+          ramp_limit_up: ramp_limit_up
+        position: 2
+Line:
+  link:
+    set:
+      carrier:
+        position: 1

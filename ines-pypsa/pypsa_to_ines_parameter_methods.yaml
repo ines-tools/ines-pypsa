@@ -1,0 +1,19 @@
+Generator:
+  unit:
+    committable:
+      false:
+        startup_method: no_startup
+      true:
+        startup_method: integer
+    p_nom_extendable:
+      false:
+        investment_method: not_allowed
+      true:
+        investment_method: period_limits
+Line:
+  link:
+    p_nom_extendable:
+      false:
+        investment_method: not_allowed
+      true:
+        investment_method: period_limits
