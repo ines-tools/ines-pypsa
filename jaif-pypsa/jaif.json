@@ -39,16 +39,6 @@
             true
         ],
         [
-            "node",
-            [
-                "commodity",
-                "region"
-            ],
-            null,
-            281473542255072,
-            true
-        ],
-        [
             "storage__region",
             [
                 "storage",
@@ -97,47 +87,37 @@
             null,
             280375465144754,
             true
+        ],
+        [
+            "commodity__to_technology__to_commodity",
+            [
+                "commodity",
+                "technology",
+                "commodity"
+            ],
+            null,
+            null,
+            true
         ]
     ],
     "parameter_definitions": [
         [
-            "commodity",
-            "co2_content",
+            "commodity__to_technology__to_commodity",
+            "CO2_captured",
             null,
             null,
             null
         ],
         [
-            "commodity",
-            "commodity_price",
+            "commodity__to_technology__to_commodity",
+            "conversion_rate",
             null,
             null,
             null
         ],
         [
-            "commodity__to_technology",
-            "conversion_coefficient",
-            null,
-            null,
-            null
-        ],
-        [
-            "node",
-            "flow_profile",
-            null,
-            null,
-            null
-        ],
-        [
-            "region",
-            "GIS_level",
-            null,
-            null,
-            null
-        ],
-        [
-            "region",
-            "type",
+            "storage",
+            "fixed_cost",
             null,
             null,
             null
@@ -186,14 +166,14 @@
         ],
         [
             "storage_connection",
-            "hour_ratio",
+            "investment_cost",
             null,
             null,
             null
         ],
         [
             "storage_connection",
-            "investment_cost",
+            "lifetime",
             null,
             null,
             null
@@ -208,7 +188,7 @@
         [
             "storage_connection__region",
             "links_existing",
-            null,
+            0.0,
             null,
             null
         ],
@@ -228,7 +208,7 @@
         ],
         [
             "technology__to_commodity",
-            "co2_captured",
+            "capacity",
             null,
             null,
             null

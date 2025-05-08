@@ -6,7 +6,8 @@ import sys
 import csv
 from math import sqrt
 from pprint import pprint
-import pycountry
+import geopandas as gpd
+from shapely.geometry import Point
 from fuzzywuzzy.process import extractOne
 import spinedb_api as api
 
@@ -68,22 +69,6 @@ def main(ppm,tdr,spd,
                         None
                     ],
                 ])
-                jaif["parameter_values"].extend([
-                    [
-                        "region",
-                        unit["Country"],
-                        "type",
-                        "onshore",
-                        "Base"
-                    ],
-                    [
-                        "region",
-                        unit["Country"],
-                        "GIS_level",
-                        "PECD1",
-                        "Base"
-                    ],
-                ])
             # commodity
             if unit["Fueltype"] not in commoditylist:
                 commoditylist.append(unit["Fueltype"])
@@ -130,7 +115,7 @@ def main(ppm,tdr,spd,
                             None
                         ],
                         [
-                            "commodity__technology__commodity",
+                            "commodity__to_technology__to_commodity",
                             [
                                 fuel_name,
                                 unit_name,
@@ -178,13 +163,13 @@ def main(ppm,tdr,spd,
                             "Base"
                         ],
                         [
-                            "commodity__technology__commodity",
+                            "commodity__to_technology__to_commodity",
                             [
                                 fuel_name,
                                 unit_name,
                                 "elec"
                             ],
-                            "efficiency",
+                            "conversion_rate",
                             year_data(unit, unit_types,unit_types_key, "efficiency"),
                             "Base"
                         ],
@@ -331,7 +316,7 @@ def aggregate_units(unit_instances, yearzero, use_maps=False,
                     unit_list.append(unit[key])
             unit_tuple = tuple(unit_list)
         if unit_tuple not in aggregated_units.keys():
-            #print(unit_tuple)
+            print(unit_tuple)# debug and information line
             aggregated_units[unit_tuple] = unit
         else:
             aggregated_unit = aggregated_units[unit_tuple]
@@ -349,9 +334,10 @@ def aggregate_units(unit_instances, yearzero, use_maps=False,
 
 def clean_unit(unit, yearzero):
     #print(unit["Country"])
-    country = pycountry.countries.search_fuzzy(unit["Country"])[0]
+    #country = pycountry.countries.search_fuzzy(unit["Country"])[0]
     #print(country)
-    unit["Country"] = country.alpha_2
+    #unit["Country"] = country.alpha_2
+    unit["Country"] = get_region(unit) #create new key "region" instead of overwriting country?
     if unit["Fueltype"]=='Other':
         if unit["Set"]=='Store':
             # most likely a battery, marine is filtered out anyway
@@ -372,6 +358,17 @@ def clean_unit(unit, yearzero):
         except:
             unit[parameter] = None
     return # existing dictionary is modified
+
+def get_region(unit):
+    lat = float(unit["lat"])
+    lon = float(unit["lon"])
+    point = Point(lon,lat)
+    poly_index = geo.distance(point).sort_values().index[0]
+    poly = geo.loc[poly_index]
+    region = poly["id"]
+    #print(unit["Country"])#debugline
+    #print(region)#debugline
+    return region
 
 def name_unit(unit, aggregate=False,
     keys = ["Technology", "Country", "Name"],
@@ -522,9 +519,14 @@ def onetime_data(unit, unit_type_parameters, parameter, modifier=1.0):
     return datavalue
 
 if __name__ == "__main__":
-    ppm = sys.argv[1] # pypsa power plant matching
-    tdr = {str(2020+(i-2)*10):sys.argv[i] for i in range(2,len(sys.argv)-1)} # pypsa technology data repository
+    geo = sys.argv[1]
+    ppm = sys.argv[2] # pypsa power plant matching
+    tdr = {str(2020+(i-2)*10):sys.argv[i] for i in range(3,len(sys.argv)-1)} # pypsa technology data repository
     spd = sys.argv[-1] # spine database preformatted with an intermediate format for the mopo project (including the "Base" alternative)
 
+    geo = gpd.read_file(geo)
+    geo = geo[geo["level"]=="PECD1"] #level = PECD1, PECD2, NUTS2, NUTS3
+    #geo = geo.to_crs(crs=3857)
+
     importlog = main(ppm,tdr,spd)
-    #pprint(importlog)# debug line
+    pprint(importlog)# debug and information line
