@@ -11,7 +11,7 @@ from shapely.geometry import Point
 from fuzzywuzzy.process import extractOne
 import spinedb_api as api
 
-def main(ppm,tdr,spd,geo,
+def main(ppm,tdr,spd,geo,inf,
     aggregate=True,
     exclude=['Other','hydro','Hydro','CHP','Reservoir', 'Run-Of-River', 'Pumped Storage', 'PV','Pv','CSP','Wind', 'Onshore', 'Offshore', 'Marine']#'Waste','Geothermal'
 ):
@@ -519,10 +519,33 @@ def onetime_data(unit, unit_type_parameters, parameter, modifier=1.0):
     return datavalue
 
 if __name__ == "__main__":
-    geo = sys.argv[1]
-    ppm = sys.argv[2] # pypsa power plant matching
-    tdr = {str(2020+(i-2)*10):sys.argv[i] for i in range(3,len(sys.argv)-1)} # pypsa technology data repository
-    spd = sys.argv[-1] # spine database preformatted with an intermediate format for the mopo project (including the "Base" alternative)
-
-    importlog = main(ppm,tdr,spd,geo)
+    #flexibility in input
+    #geo = sys.argv[1]
+    #inf = sys.argv[2]
+    #ppm = sys.argv[3] # pypsa power plant matching
+    #tdr = {str(2020+(i-2)*10):sys.argv[i] for i in range(4,len(sys.argv)-1)} # pypsa technology data repository
+    #spd = sys.argv[-1] # spine database preformatted with an intermediate format for the mopo project
+    #flexibility in order (with limited flexibility of input)
+    inputfiles={
+        "geo":"geo",#"onshore.geojson",
+        "inf":"inflation",#"EU_historical_inflation_ECB.csv",
+        "ppm":"powerplants",#"powerplants.csv",
+        "tdr":{
+            "y2020":"costs_2020",#"costs_2020.csv",
+            "y2030":"costs_2030",#"costs_2030.csv",
+            "y2040":"costs_2040",#"costs_2040.csv",
+            "y2050":"costs_2050",#"costs_2050.csv",
+        },
+        "spd":"http",#spine db
+    }
+    for key,value in inputfiles.items():
+        if type(value) == dict:
+            for k,v in value.items():
+                inputfiles[key][k]=extractOne(v,sys.argv[1:])[0]
+                print(f"Using {inputfiles[key][k]} as {v}")
+        else:
+            inputfiles[key]=extractOne(value,sys.argv[1:])[0]
+            print(f"Using {inputfiles[key]} as {value}")
+    
+    importlog = main(**inputfiles)
     pprint(importlog)# debug and information line
