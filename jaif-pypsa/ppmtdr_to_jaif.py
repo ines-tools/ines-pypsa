@@ -13,11 +13,12 @@ import spinedb_api as api
 
 def main(ppm,tdr,spd,geo,inf,
     aggregate=True,
+    geolevel="PECD1",#"PECD1",# "PECD2",# "NUTS2",# "NUTS3",#
     exclude=['Other','hydro','Hydro','CHP','Reservoir', 'Run-Of-River', 'Pumped Storage', 'PV','Pv','CSP','Wind', 'Onshore', 'Offshore', 'Marine']#'Waste','Geothermal'
 ):
     # load data
     geomap = gpd.read_file(geo)
-    geomap = geomap[geomap["level"]=="PECD1"] #level = PECD1, PECD2, NUTS2, NUTS3
+    geomap = geomap[geomap["level"]==geolevel]
 
     yearzero=sorted(tdr.keys())[0]
     unit_types={}
