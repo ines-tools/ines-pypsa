@@ -20,6 +20,14 @@ def main(ppm,tdr,spd,geo,inf,
     geomap = gpd.read_file(geo)
     geomap = geomap[geomap["level"]==geolevel]
 
+    yearly_inflation={}
+    with open(inf,'r') as file:
+        csvreader = csv.reader(file)
+        next(csvreader)
+        for line in csvreader:# next to skip header
+            yearly_inflation[int(line[1])]=float(line[2])/100
+    #print(yearly_inflation)#debugline
+
     yearzero=sorted(tdr.keys())[0]
     unit_types={}
     for year,path in tdr.items():
