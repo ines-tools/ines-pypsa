@@ -16,6 +16,9 @@ def main(ppm,tdr,spd,geo,
     exclude=['Other','hydro','Hydro','CHP','Reservoir', 'Run-Of-River', 'Pumped Storage', 'PV','Pv','CSP','Wind', 'Onshore', 'Offshore', 'Marine']#'Waste','Geothermal'
 ):
     # load data
+    geomap = gpd.read_file(geo)
+    geomap = geomap[geomap["level"]=="PECD1"] #level = PECD1, PECD2, NUTS2, NUTS3
+
     yearzero=sorted(tdr.keys())[0]
     unit_types={}
     for year,path in tdr.items():
@@ -50,7 +53,7 @@ def main(ppm,tdr,spd,geo,
     #unit_type_key_list = [] # for debugging
     for unit in unit_instances:
         # some cleaning
-        unit["Country"] = get_region(unit,geo) #create new key "region" instead of overwriting country?
+        unit["Country"] = get_region(unit,geomap) #create new key "region" instead of overwriting country?
         if not aggregate:
             clean_unit(unit,yearzero)
         if unit["Fueltype"] not in exclude and unit["Country"] not in exclude and unit["Set"] not in exclude and unit["Technology"] not in exclude:
@@ -355,12 +358,12 @@ def clean_unit(unit, yearzero):
             unit[parameter] = None
     return # existing dictionary is modified
 
-def get_region(unit,geo):
+def get_region(unit,geomap):
     lat = float(unit["lat"])
     lon = float(unit["lon"])
     point = Point(lon,lat)
-    poly_index = geo.distance(point).sort_values().index[0]
-    poly = geo.loc[poly_index]
+    poly_index = geomap.distance(point).sort_values().index[0]
+    poly = geomap.loc[poly_index]
     region = poly["id"]
     #print(unit["Country"])#debugline
     #print(region)#debugline
@@ -520,10 +523,6 @@ if __name__ == "__main__":
     ppm = sys.argv[2] # pypsa power plant matching
     tdr = {str(2020+(i-2)*10):sys.argv[i] for i in range(3,len(sys.argv)-1)} # pypsa technology data repository
     spd = sys.argv[-1] # spine database preformatted with an intermediate format for the mopo project (including the "Base" alternative)
-
-    geo = gpd.read_file(geo)
-    geo = geo[geo["level"]=="PECD1"] #level = PECD1, PECD2, NUTS2, NUTS3
-    #geo = geo.to_crs(crs=3857)
 
     importlog = main(ppm,tdr,spd,geo)
     pprint(importlog)# debug and information line
