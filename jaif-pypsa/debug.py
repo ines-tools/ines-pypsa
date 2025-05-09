@@ -1,6 +1,10 @@
 import csv
+import geopandas as gpd
 from pprint import pprint
-from ppmtdr_to_jaif import clean_unit, map_fuel, map_technology
+from ppmtdr_to_jaif import get_region,clean_unit, map_fuel, map_technology
+
+geo = gpd.read_file('/home/u0102409/MyApps/spinetools/geo/onshore.geojson')
+geo = geo[geo["level"]=="PECD1"] #level = PECD1, PECD2, NUTS2, NUTS3
 
 data_path='/home/u0102409/MyApps/pypsa/pypsa-eur data/'
 tdr={
@@ -35,22 +39,28 @@ with open(ppm, mode='r') as file:
 #pprint(unit_instances)
 exclude=['Other','Waste','Geothermal','hydro','Hydro','CHP','Reservoir', 'Run-Of-River', 'Pumped Storage', 'PV','Pv','CSP','Wind', 'Onshore', 'Offshore', 'Marine']
 unitlist=[]
+fuellist=[]
 otherlist=[]
 gislist=[]
 giskeys = ['\ufeffid', 'Name', 'Fueltype', 'Technology', 'Set', 'Country', 'Capacity', 'Efficiency', 'lifetime', 'lat', 'lon']
 for unit in unit_instances:
     if unit["Technology"] not in unitlist:
         unitlist.append(unit["Technology"])
+    if unit["Fueltype"] not in fuellist:
+        fuellist.append(unit["Fueltype"])
     if unit["Fueltype"] == 'Other' and (unit["Technology"],unit["Set"]) not in otherlist:
         otherlist.append((unit["Technology"],unit["Set"]))
     if unit["Fueltype"] not in exclude and unit["Country"] not in exclude and unit["Set"] not in exclude and unit["Technology"] not in exclude:
+        unit["Country"] = get_region(unit,geo)
         clean_unit(unit,'2020')
         unit["Fueltype"] = map_fuel(unit["Fueltype"])
         unit["Technology"] = map_technology(unit["Technology"])
         gislist.append({parameter:unit[parameter] for parameter in giskeys})
-print(unitlist)
-#print()
-#pprint(otherlist)
+pprint(unitlist)
+print()
+pprint(otherlist)
+print()
+pprint(fuellist)
 
 with open('GIS.csv', 'w', newline='') as gis_file:
     dict_writer = csv.DictWriter(gis_file, giskeys)

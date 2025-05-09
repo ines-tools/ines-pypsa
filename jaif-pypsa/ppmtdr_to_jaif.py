@@ -11,9 +11,9 @@ from shapely.geometry import Point
 from fuzzywuzzy.process import extractOne
 import spinedb_api as api
 
-def main(ppm,tdr,spd,
+def main(ppm,tdr,spd,geo,
     aggregate=True,
-    exclude=['Other','Waste','Geothermal','hydro','Hydro','CHP','Reservoir', 'Run-Of-River', 'Pumped Storage', 'PV','Pv','CSP','Wind', 'Onshore', 'Offshore', 'Marine']
+    exclude=['Other','hydro','Hydro','CHP','Reservoir', 'Run-Of-River', 'Pumped Storage', 'PV','Pv','CSP','Wind', 'Onshore', 'Offshore', 'Marine']#'Waste','Geothermal'
 ):
     # load data
     yearzero=sorted(tdr.keys())[0]
@@ -50,6 +50,7 @@ def main(ppm,tdr,spd,
     #unit_type_key_list = [] # for debugging
     for unit in unit_instances:
         # some cleaning
+        unit["Country"] = get_region(unit,geo) #create new key "region" instead of overwriting country?
         if not aggregate:
             clean_unit(unit,yearzero)
         if unit["Fueltype"] not in exclude and unit["Country"] not in exclude and unit["Set"] not in exclude and unit["Technology"] not in exclude:
@@ -333,11 +334,6 @@ def aggregate_units(unit_instances, yearzero, use_maps=False,
     return aggregated_units.values()
 
 def clean_unit(unit, yearzero):
-    #print(unit["Country"])
-    #country = pycountry.countries.search_fuzzy(unit["Country"])[0]
-    #print(country)
-    #unit["Country"] = country.alpha_2
-    unit["Country"] = get_region(unit) #create new key "region" instead of overwriting country?
     if unit["Fueltype"]=='Other':
         if unit["Set"]=='Store':
             # most likely a battery, marine is filtered out anyway
@@ -359,7 +355,7 @@ def clean_unit(unit, yearzero):
             unit[parameter] = None
     return # existing dictionary is modified
 
-def get_region(unit):
+def get_region(unit,geo):
     lat = float(unit["lat"])
     lon = float(unit["lon"])
     point = Point(lon,lat)
@@ -478,8 +474,9 @@ def map_fuel_technology(fuel, technology):
         'bio': 'bioST',
         'coal': 'SCPC',
         'HC': 'oil-eng',
-        'U-92': 'nuclear',
-        'waste': 'ST',
+        'U-92': 'nuclear-3',
+        'waste': 'wasteST',
+        'geothermal': 'geothermal',
     }
     tech = extractOne(fuel,fuel_technology.keys(),score_cutoff=90)
     if tech:
@@ -528,5 +525,5 @@ if __name__ == "__main__":
     geo = geo[geo["level"]=="PECD1"] #level = PECD1, PECD2, NUTS2, NUTS3
     #geo = geo.to_crs(crs=3857)
 
-    importlog = main(ppm,tdr,spd)
+    importlog = main(ppm,tdr,spd,geo)
     pprint(importlog)# debug and information line
