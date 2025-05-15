@@ -101,7 +101,7 @@ def existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,milestoneyears,un
 
     regionlist = []
     commoditylist = []
-    entitylist = []
+    technologylist = []
     #unit_type_key_list = [] # for debugging
     years = [referenceyear]+[milestoneyears]
     for unit in unit_instances:
@@ -126,8 +126,8 @@ def existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,milestoneyears,un
                 ])
         # power plant
         if unit["entityclass"]=="PP":
-            if unit["technology"] not in entitylist:
-                entitylist.append(unit["technology"])#may need to be adjusted for the aggregration (if not aggregated for Technology)
+            if unit["technology"] not in technologylist:
+                technologylist.append(unit["technology"])#may need to be adjusted for the aggregration (if not aggregated for Technology)
                 jaif["entities"].extend([
                     [
                         "technology",
@@ -246,8 +246,8 @@ def existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,milestoneyears,un
         #if unit["entityclass"]=="CHP": # skip
         # storage
         if unit["entityclass"]=="Store":
-            if unit["technology"] not in entitylist:
-                entitylist.append(unit["technology"])
+            if unit["technology"] not in technologylist:
+                technologylist.append(unit["technology"])
                 jaif["entities"].extend([
                     [
                         "storage",
