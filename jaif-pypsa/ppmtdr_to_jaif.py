@@ -36,10 +36,15 @@ def main(geo,inf,rfy,msy,ppm,spd,
         ],
         "parameter_values":[]
     }
+
+    #load data
+    geomap = gpd.read_file(geo)
+    geomap = geomap[geomap["level"]==geolevel]
+    regions = geomap["id"].to_list()
     
     #format data
-    existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,list(msy.keys()),units_existing,commodities)
-    new_units(jaif,msy,units_new,commodities)
+    existing_units(jaif,inf,rfy,ppm,geomap,referenceyear,list(msy.keys()),units_existing,commodities)
+    new_units(jaif,msy,regions,units_new,commodities)
 
     # save to spine database
     with api.DatabaseMapping(spd) as target_db:
@@ -53,7 +58,7 @@ def main(geo,inf,rfy,msy,ppm,spd,
         target_db.commit_session("Added pypsa data")
     return importlog
 
-def existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,milestoneyears,units_existing,commodities):
+def existing_units(jaif,inf,rfy,ppm,geomap,referenceyear,milestoneyears,units_existing,commodities):
     """
     Adds existing units to jaif
 
@@ -65,9 +70,6 @@ def existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,milestoneyears,un
         technonology__to_commodity: capacity = 1.0
     """
     # load data
-    geomap = gpd.read_file(geo)
-    geomap = geomap[geomap["level"]==geolevel]
-
     yearly_inflation={}
     with open(inf,'r') as file:
         csvreader = csv.reader(file)
@@ -103,7 +105,7 @@ def existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,milestoneyears,un
     commoditylist = []
     technologylist = []
     #unit_type_key_list = [] # for debugging
-    years = [referenceyear]+[milestoneyears]
+    years = [referenceyear].extend(milestoneyears)
     for unit in unit_instances:
         #print([unit["region"],unit["commodity"],unit["technology"]])#debugline
         if unit["region"] not in regionlist:
@@ -246,6 +248,7 @@ def existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,milestoneyears,un
         #if unit["entityclass"]=="CHP": # skip
         # storage
         if unit["entityclass"]=="Store":
+            #map_tdr needs to be updated with storage bicharging and storage and so does this part
             if unit["technology"] not in technologylist:
                 technologylist.append(unit["technology"])
                 jaif["entities"].extend([
@@ -334,7 +337,7 @@ def existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,milestoneyears,un
     
     return jaif
 
-def new_units(jaif,msy,units_new,commodities):
+def new_units(jaif,msy,regions,units_new,commodities):
     """
     Adds new units to jaif
 
@@ -347,38 +350,318 @@ def new_units(jaif,msy,units_new,commodities):
         average conversion_rate
         capacity = 1 from asset to main commodity
     """
-    """
-    jaif["parameter_values"].extend([
-        [
-            "technology",
-            unit["technology"],
-            "lifetime",
-            search_data(unit, unit_types, unit["technology"], [datayear], "lifetime"),
-            "Base"
-        ],
-        [
-            "technology__to_commodity",
-            [
-                unit["technology"],
-                "elec"
-            ],
-            "investment_cost",
-            search_data(unit, unit_types, unit["technology"], years, "investment_cost"),
-            "Base"
-        ],
-        [
-            "technology__to_commodity",
-            [
-                unit["technology"],
-                "elec"
-            ],
-            "fixed_cost",
-            search_data(unit, unit_types, unit["technology"], years, "fixed_cost"),
-            "Base"
-        ],
-    ])
-    """
+    unit_types={}
+    #could be done differently as unit_types[line[0]][line[1]][year][line[2]]
+    for year,path in msy.items():#only one entry
+        with open(path, 'r') as file:
+            unit_types[year]={}
+            for line in csv.reader(file):
+                line = map_tdr_jaif(line)
+                if (line[0] in units_new or line[0] in commodities or line[0]=='CC') and line[2]!="unknown":
+                    if line[0] not in unit_types[year]:#to avoid stray entries, use fuzzy search of unit_types keys
+                        unit_types[year][line[0]]={}
+                    unit_types[year][line[0]][line[1]]=line[2]
+                    #unit_types[year][line[0]][line[1]+'_description']=line[3]+' '+line[4]+' '+line[5]
+    #print(unit_types)#debugline
+
+    unit_instances = generate_unit_instances(regions,units_new)
+
+    regionlist = []
+    commoditylist = []
+    technologylist = []
+    #unit_type_key_list = [] # for debugging
+    years = list(msy.keys())
+    for unit in unit_instances:
+        #print([unit["region"],unit["commodity"],unit["technology"]])#debugline
+        if unit["region"] not in regionlist:
+            regionlist.append(unit["region"])
+            jaif["entities"].extend([
+                [
+                    "region",
+                    unit["region"],
+                    None
+                ],
+            ])
+        if unit["commodity"]:
+            # commodity
+            if unit["commodity"] not in commoditylist:
+                commoditylist.append(unit["commodity"])
+                jaif["entities"].append([
+                    "commodity",
+                    unit["commodity"],
+                    None
+                ])
+        # power plant
+        if unit["entityclass"]=="PP":
+            if unit["technology"] not in technologylist:
+                technologylist.append(unit["technology"])
+                jaif["entities"].extend([
+                    [
+                        "technology",
+                        unit["technology"],
+                        None
+                    ],
+                    [
+                        "technology__to_commodity",
+                        [
+                            unit["technology"],
+                            "elec"
+                        ],
+                        None
+                    ],
+                ])
+                if unit["commodity"]:
+                    jaif["entities"].extend([
+                        [
+                            "commodity__to_technology",
+                            [
+                                unit["commodity"],
+                                unit["technology"]
+                            ],
+                            None
+                        ],
+                        [
+                            "commodity__to_technology__to_commodity",
+                            [
+                                unit["commodity"],
+                                unit["technology"],
+                                "elec"
+                            ],
+                            None
+                        ],
+                    ])
+                jaif["parameter_values"].extend([
+                    [
+                        "technology__to_commodity",
+                        [
+                            unit["technology"],
+                            "elec"
+                        ],
+                        "capacity",
+                        1.0,
+                        "Base"
+                    ],
+                    [
+                        "technology__to_commodity",
+                        [
+                            unit["technology"],
+                            "elec"
+                        ],
+                        "investment_cost",
+                        search_data(unit, unit_types, unit["technology"], years, "investment_cost"),
+                        "Base"
+                    ],
+                    [
+                        "technology__to_commodity",
+                        [
+                            unit["technology"],
+                            "elec"
+                        ],
+                        "fixed_cost",
+                        search_data(unit, unit_types, unit["technology"], years, "fixed_cost"),
+                        "Base"
+                    ],
+                    [
+                        "technology__to_commodity",
+                        [
+                            unit["technology"],
+                            "elec"
+                        ],
+                        "operational_cost",
+                        search_data(unit, unit_types, unit["technology"], years, "operational_cost"),
+                        "Base"
+                    ],
+                ])
+                if unit["commodity"]:
+                    jaif["parameter_values"].extend([
+                        [
+                            "commodity__to_technology__to_commodity",
+                            [
+                                unit["commodity"],
+                                unit["technology"],
+                                "elec"
+                            ],
+                            "conversion_rate",
+                            search_data(unit, unit_types, unit["technology"], [years[0]], "conversion_rate"),
+                            "Base"
+                        ],
+                        [
+                            "commodity__to_technology__to_commodity",
+                            [
+                                unit["commodity"],
+                                unit["technology"],
+                                "elec"
+                            ],
+                            "CO2_captured",
+                            search_data(unit, unit_types, unit["technology"], [years[0]], "CO2_captured"),
+                            "Base"
+                        ],
+                    ])
+            jaif["entities"].extend([
+                [
+                    "technology__region",
+                    [
+                        unit["technology"],
+                        unit["region"]
+                    ],
+                    None
+                ],
+            ])
+            #pprint(year_data(unit, unit_types,unit_types_key, "efficiency"))
+        #if unit["entityclass"]=="CHP": # skip
+        # storage
+        if unit["entityclass"]=="Store":
+            #map_tdr needs to be updated with storage bicharging and storage and so does this part
+            if unit["technology"] not in technologylist:
+                technologylist.append(unit["technology"])
+                jaif["entities"].extend([
+                    [
+                        "storage",
+                        unit["technology"],
+                        None
+                    ],
+                    [
+                        "storage_connection",
+                        [
+                            unit["technology"],
+                            "elec"
+                        ],
+                        None
+                    ],
+                ])
+                jaif["parameter_values"].extend([
+                    [
+                        "storage_connection",
+                        [
+                            unit["technology"],
+                            "elec"
+                        ],
+                        "efficiency_in",
+                        search_data(unit, unit_types, unit["technology"], [years[0]], "efficiency", modifier=1/sqrt(2)),
+                        "Base"
+                    ],
+                    [
+                        "storage_connection",
+                        [
+                            unit["technology"],
+                            "elec"
+                        ],
+                        "efficiency_out",
+                        search_data(unit, unit_types, unit["technology"], [years[0]], "efficiency", modifier=1/sqrt(2)),
+                        "Base"
+                    ],
+                ])
+                jaif["parameter_values"].extend([
+                    [
+                        "storage_connection",
+                        [
+                            unit["technology"],
+                            "elec"
+                        ],
+                        "investment_cost",
+                        search_data(unit, unit_types, unit["Technolgy"], years, "investment_cost"),
+                        "Base"
+                    ],
+                    [
+                        "storage_connection",
+                        [
+                            unit["technology"],
+                            "elec"
+                        ],
+                        "fixed_cost",
+                        search_data(unit, unit_types, unit["Technolgy"], years, "fixed_cost"),
+                        "Base"
+                    ],
+                ])
+            jaif["entities"].extend([
+                [
+                    "storage__region",
+                    [
+                        unit["technology"],
+                        unit["region"]
+                    ],
+                    None
+                ],
+            ])
+    
     return jaif
+
+def generate_unit_instances(regions,units):
+    map_jaif={
+        'bioST':{
+            "commodity":"bio",
+            "technology":"bioST",
+            "entityclass":"PP",
+        },
+        'bioST+CC':{
+            "commodity":"bio",
+            "technology":"bioST+CC",
+            "entityclass":"PP",
+        },
+        'CCGT':{
+            "commodity":"CH4",
+            "technology":"CCGT",
+            "entityclass":"PP",
+        },
+        "CCGT+CC":{
+            "commodity":"CH4",
+            "technology":"CCGT+CC",
+            "entityclass":"PP",
+        },
+        "CCGT-H2":{
+            "commodity":"H2",
+            "technology":"CCGT-H2",
+            "entityclass":"PP",
+        },
+        'fuelcell':{
+            "commodity":"H2",
+            "technology":"fuelcell",
+            "entityclass":"PP",
+        },
+        "geothermal":{
+            "commodity":None,
+            "technology":"geothermal",
+            "entityclass":"PP",
+        },
+        "nuclear-3":{
+            "commodity":"U-92",
+            "technology":"nuclear-3",
+            "entityclass":"PP",
+        },
+        "OCGT":{
+            "commodity":"CH4",
+            "technology":"OCGT",
+            "entityclass":"PP",
+        },
+        "OCGT+CC":{
+            "commodity":"CH4",
+            "technology":"OCGT+CC",
+            "entityclass":"PP",
+        },
+        "oil-eng":{
+            "commodity":"HC",
+            "technology":"oil-eng",
+            "entityclass":"PP",
+        },
+        "SCPC":{
+            "commodity":"coal",
+            "technology":"SCPC",
+            "entityclass":"PP",
+        },
+        "SCPC+CC":{
+            "commodity":"coal",
+            "technology":"SCPC+CC",
+            "entityclass":"PP",
+        },
+    }
+    unit_instances = []
+    for region in regions:
+        for unit in units:
+            if unit in map_jaif:
+                unit_jaif = map_jaif[unit]
+                unit_jaif["region"]=region
+                unit_instances.append(unit_jaif)
+    return unit_instances
 
 def aggregate_units(unit_instances, unit_types, units, referenceyear, datayear, milestoneyears, geomap,
     average_parameters = ["conversion_rate"],
@@ -672,7 +955,7 @@ def search_data(unit, unit_types, unit_type_key, years, parameter, data=None, mo
     if len(data)==0:
         parameter_value = None
         print(f"Cannot find parameter {parameter} for {unit["technology"]}")
-    elif len(years) > 1:
+    elif len(data) > 1:
         parameter_value = {
         "index_type": "str",
         "rank": 1,
