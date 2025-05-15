@@ -124,19 +124,8 @@ def existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,milestoneyears,un
                     unit["commodity"],
                     None
                 ])
-                """
-                jaif["parameter_values"].extend([
-                    [
-                        "commodity",
-                        unit["commodity"],
-                        "commodity_price",
-                        search_data(unit, unit_types, unit["technology"], years, "operational_cost"),
-                        "Base"
-                    ],
-                ])
-                """
         # power plant
-        if unit["entitytype"]=="PP":
+        if unit["entityclass"]=="PP":
             if unit["technology"] not in entitylist:
                 entitylist.append(unit["technology"])#may need to be adjusted for the aggregration (if not aggregated for Technology)
                 jaif["entities"].extend([
@@ -254,9 +243,9 @@ def existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,milestoneyears,un
                 ],
             ])
             #pprint(year_data(unit, unit_types,unit_types_key, "efficiency"))
-        #if unit["entitytype"]=="CHP": # skip
+        #if unit["entityclass"]=="CHP": # skip
         # storage
-        if unit["entitytype"]=="Store":
+        if unit["entityclass"]=="Store":
             if unit["technology"] not in entitylist:
                 entitylist.append(unit["technology"])
                 jaif["entities"].extend([
@@ -564,7 +553,7 @@ def map_ppm_jaif(unit_ppm):
     unit_jaif = {
         "commodity":fuel_ppm,
         "technology":tech_ppm,
-        "entitytype":set_ppm,
+        "entityclass":set_ppm,
         "conversion_rate":eta_ppm,
         "capacity":cap_ppm,
         "date_in":datein_ppm,
