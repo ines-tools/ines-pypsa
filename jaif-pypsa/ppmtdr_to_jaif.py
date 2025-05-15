@@ -183,7 +183,7 @@ def existing_units(jaif,inf,rfy,ppm,geomap,referenceyear,milestoneyears,units_ex
                             "elec"
                         ],
                         "fixed_cost",
-                        search_data(unit, unit_types, unit["technology"], [datayear], "fixed_cost"),
+                        search_data(unit, unit_types, unit["technology"], [datayear], "fixed_cost",modifier=inflationfactor(yearly_inflation,datayear,referenceyear)),
                         "Base"
                     ],
                     [
@@ -193,7 +193,7 @@ def existing_units(jaif,inf,rfy,ppm,geomap,referenceyear,milestoneyears,units_ex
                             "elec"
                         ],
                         "operational_cost",
-                        search_data(unit, unit_types, unit["technology"], [datayear], "operational_cost"),
+                        search_data(unit, unit_types, unit["technology"], [datayear], "operational_cost",modifier=inflationfactor(yearly_inflation,datayear,referenceyear)),
                         "Base"
                     ],
                 ])
