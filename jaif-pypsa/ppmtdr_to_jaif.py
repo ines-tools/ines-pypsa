@@ -432,6 +432,13 @@ def new_units(jaif,msy,regions,units_new,commodities):
                     ])
                 jaif["parameter_values"].extend([
                     [
+                        "technology",
+                        unit["technology"],
+                        "lifetime",
+                        search_data(unit, unit_types, unit["technology"], [years[0]], "lifetime"),
+                        "Base"
+                    ],
+                    [
                         "technology__to_commodity",
                         [
                             unit["technology"],
@@ -553,13 +560,20 @@ def new_units(jaif,msy,regions,units_new,commodities):
                 ])
                 jaif["parameter_values"].extend([
                     [
+                        "storage",
+                        unit["technology"],
+                        "lifetime",
+                        search_data(unit, unit_types, unit["technology"], years, "lifetime"),
+                        "Base"
+                    ],
+                    [
                         "storage_connection",
                         [
                             unit["technology"],
                             "elec"
                         ],
                         "investment_cost",
-                        search_data(unit, unit_types, unit["Technolgy"], years, "investment_cost"),
+                        search_data(unit, unit_types, unit["technology"], years, "investment_cost"),
                         "Base"
                     ],
                     [
