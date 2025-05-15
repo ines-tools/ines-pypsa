@@ -105,7 +105,7 @@ def existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,milestoneyears,un
     #unit_type_key_list = [] # for debugging
     years = [referenceyear]+[milestoneyears]
     for unit in unit_instances:
-        #print([unit["region"],unit["commodity"],unit["entity"]])#debugline
+        #print([unit["region"],unit["commodity"],unit["technology"]])#debugline
         if unit["region"] not in regionlist:
             regionlist.append(unit["region"])
             jaif["entities"].extend([
@@ -130,25 +130,25 @@ def existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,milestoneyears,un
                         "commodity",
                         unit["commodity"],
                         "commodity_price",
-                        search_data(unit, unit_types, unit["entity"], years, "operational_cost"),
+                        search_data(unit, unit_types, unit["technology"], years, "operational_cost"),
                         "Base"
                     ],
                 ])
                 """
         # power plant
         if unit["entitytype"]=="PP":
-            if unit["entity"] not in entitylist:
-                entitylist.append(unit["entity"])#may need to be adjusted for the aggregration (if not aggregated for Technology)
+            if unit["technology"] not in entitylist:
+                entitylist.append(unit["technology"])#may need to be adjusted for the aggregration (if not aggregated for Technology)
                 jaif["entities"].extend([
                     [
                         "technology",
-                        unit["entity"],
+                        unit["technology"],
                         None
                     ],
                     [
                         "technology__to_commodity",
                         [
-                            unit["entity"],
+                            unit["technology"],
                             "elec"
                         ],
                         None
@@ -160,7 +160,7 @@ def existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,milestoneyears,un
                             "commodity__to_technology",
                             [
                                 unit["commodity"],
-                                unit["entity"]
+                                unit["technology"]
                             ],
                             None
                         ],
@@ -168,7 +168,7 @@ def existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,milestoneyears,un
                             "commodity__to_technology__to_commodity",
                             [
                                 unit["commodity"],
-                                unit["entity"],
+                                unit["technology"],
                                 "elec"
                             ],
                             None
@@ -178,11 +178,11 @@ def existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,milestoneyears,un
                     [
                         "technology__to_commodity",
                         [
-                            unit["entity"],
+                            unit["technology"],
                             "elec"
                         ],
                         "operational_cost",
-                        search_data(unit, unit_types, unit["entity"], [datayear], "operational_cost", modifier=inflationfactor(yearly_inflation,datayear,referenceyear)),# key may also be 'fuel' for some data but that conflicts with Fueltype
+                        search_data(unit, unit_types, unit["technology"], [datayear], "operational_cost", modifier=inflationfactor(yearly_inflation,datayear,referenceyear)),# key may also be 'fuel' for some data but that conflicts with Fueltype
                         "Base"
                     ],
                 ])
@@ -192,11 +192,11 @@ def existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,milestoneyears,un
                             "commodity__to_technology__to_commodity",
                             [
                                 unit["commodity"],
-                                unit["entity"],
+                                unit["technology"],
                                 "elec"
                             ],
                             "conversion_rate",
-                            search_data(unit, unit_types, unit["entity"], [datayear], "conversion_rate"),
+                            search_data(unit, unit_types, unit["technology"], [datayear], "conversion_rate"),
                             "Base"
                         ],
                     ])
@@ -204,29 +204,29 @@ def existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,milestoneyears,un
                 jaif["parameter_values"].extend([
                     [
                         "technology",
-                        unit["entity"],
+                        unit["technology"],
                         "lifetime",
-                        search_data(unit, unit_types, unit["entity"], [datayear], "lifetime"),
+                        search_data(unit, unit_types, unit["technology"], [datayear], "lifetime"),
                         "Base"
                     ],
                     [
                         "technology__to_commodity",
                         [
-                            unit["entity"],
+                            unit["technology"],
                             "elec"
                         ],
                         "investment_cost",
-                        search_data(unit, unit_types, unit["entity"], years, "investment_cost"),
+                        search_data(unit, unit_types, unit["technology"], years, "investment_cost"),
                         "Base"
                     ],
                     [
                         "technology__to_commodity",
                         [
-                            unit["entity"],
+                            unit["technology"],
                             "elec"
                         ],
                         "fixed_cost",
-                        search_data(unit, unit_types, unit["entity"], years, "fixed_cost"),
+                        search_data(unit, unit_types, unit["technology"], years, "fixed_cost"),
                         "Base"
                     ],
                 ])
@@ -235,7 +235,7 @@ def existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,milestoneyears,un
                 [
                     "technology__region",
                     [
-                        unit["entity"],
+                        unit["technology"],
                         unit["region"]
                     ],
                     None
@@ -245,11 +245,11 @@ def existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,milestoneyears,un
                 [
                     "technology__region",
                     [
-                        unit["entity"],
+                        unit["technology"],
                         unit["region"]
                     ],
                     "units_existing",
-                    search_data(unit, unit_types, unit["entity"], years, "capacity", data = [[k,v] for k,v in unit["capacity"].items()]),
+                    search_data(unit, unit_types, unit["technology"], years, "capacity", data = [[k,v] for k,v in unit["capacity"].items()]),
                     "Base"
                 ],
             ])
@@ -257,18 +257,18 @@ def existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,milestoneyears,un
         #if unit["entitytype"]=="CHP": # skip
         # storage
         if unit["entitytype"]=="Store":
-            if unit["entity"] not in entitylist:
-                entitylist.append(unit["entity"])
+            if unit["technology"] not in entitylist:
+                entitylist.append(unit["technology"])
                 jaif["entities"].extend([
                     [
                         "storage",
-                        unit["entity"],
+                        unit["technology"],
                         None
                     ],
                     [
                         "storage_connection",
                         [
-                            unit["entity"],
+                            unit["technology"],
                             "elec"
                         ],
                         None
@@ -278,21 +278,21 @@ def existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,milestoneyears,un
                     [
                         "storage_connection",
                         [
-                            unit["entity"],
+                            unit["technology"],
                             "elec"
                         ],
                         "efficiency_in",
-                        search_data(unit, unit_types, unit["entity"], [datayear], "efficiency", modifier=1/sqrt(2)),
+                        search_data(unit, unit_types, unit["technology"], [datayear], "efficiency", modifier=1/sqrt(2)),
                         "Base"
                     ],
                     [
                         "storage_connection",
                         [
-                            unit["entity"],
+                            unit["technology"],
                             "elec"
                         ],
                         "efficiency_out",
-                        search_data(unit, unit_types, unit["entity"], [datayear], "efficiency", modifier=1/sqrt(2)),
+                        search_data(unit, unit_types, unit["technology"], [datayear], "efficiency", modifier=1/sqrt(2)),
                         "Base"
                     ],
                 ])
@@ -301,7 +301,7 @@ def existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,milestoneyears,un
                     [
                         "storage_connection",
                         [
-                            unit["entity"],
+                            unit["technology"],
                             "elec"
                         ],
                         "investment_cost",
@@ -311,7 +311,7 @@ def existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,milestoneyears,un
                     [
                         "storage_connection",
                         [
-                            unit["entity"],
+                            unit["technology"],
                             "elec"
                         ],
                         "fixed_cost",
@@ -324,7 +324,7 @@ def existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,milestoneyears,un
                 [
                     "storage__region",
                     [
-                        unit["entity"],
+                        unit["technology"],
                         unit["region"]
                     ],
                     None
@@ -334,11 +334,11 @@ def existing_units(jaif,geo,inf,rfy,ppm,geolevel,referenceyear,milestoneyears,un
                 [
                     "storage__region",
                     [
-                        unit["entity"],
+                        unit["technology"],
                         unit["region"]
                     ],
                     "storages_existing",
-                    search_data(unit, unit_types, unit["entity"],[referenceyear], "capacity", data=[[k,v] for k,v in unit["capacity"].items()]),
+                    search_data(unit, unit_types, unit["technology"],[referenceyear], "capacity", data=[[k,v] for k,v in unit["capacity"].items()]),
                     "Base"
                 ],
             ])
@@ -372,31 +372,31 @@ def aggregate_units(unit_instances, unit_types, units, referenceyear, datayear, 
     aggregated_units = {}
     for unit in unit_instances:
         unit = map_ppm_jaif(unit)
-        if unit["entity"] in units:
+        if unit["technology"] in units:
             #clean parameter fields
             unit["region"]=get_region(unit,geomap)
             #tuple for aggregating
-            unit_tuple = tuple([unit[key] for key in ["commodity","entity","region"]])
+            unit_tuple = tuple([unit[key] for key in ["commodity","technology","region"]])
             if unit_tuple not in aggregated_units.keys():
                 #print(unit_tuple)# debug and information line
                 #initialise
                 aggregated_units[unit_tuple] = deepcopy(unit)
                 aggregated_unit = aggregated_units[unit_tuple]
                 for parameter in average_parameters:
-                    unit[parameter]=search_data(unit,unit_types,unit["entity"],[datayear],parameter)
+                    unit[parameter]=search_data(unit,unit_types,unit["technology"],[datayear],parameter)
                     if unit[parameter]:
                         aggregated_unit[parameter] = float(unit[parameter])
                     else:
                         aggregated_unit[parameter] = None
                 for parameter in sum_parameters:
-                    unit[parameter]=search_data(unit,unit_types,unit["entity"],[datayear],parameter)
+                    unit[parameter]=search_data(unit,unit_types,unit["technology"],[datayear],parameter)
                     if unit[parameter]:
                         aggregated_unit[parameter] = float(unit[parameter])
                     else:
                         aggregated_unit[parameter] = None
                 for parameter in cumulative_parameters:
                     if parameter == "capacity":
-                        lifetime = search_data(unit,unit_types,unit["entity"],[datayear],"lifetime")
+                        lifetime = search_data(unit,unit_types,unit["technology"],[datayear],"lifetime")
                         unit["capacity"] = decay_capacity(unit, lifetime, referenceyear, milestoneyears)
                     if unit[parameter]:
                         aggregated_unit[parameter] = deepcopy(unit[parameter])
@@ -406,20 +406,20 @@ def aggregate_units(unit_instances, unit_types, units, referenceyear, datayear, 
                 #aggregate
                 aggregated_unit = aggregated_units[unit_tuple]
                 for parameter in average_parameters:
-                    unit[parameter]=search_data(unit,unit_types,unit["entity"],[datayear],parameter)
+                    unit[parameter]=search_data(unit,unit_types,unit["technology"],[datayear],parameter)
                     if aggregated_unit[parameter] and unit[parameter]:
                         aggregated_unit[parameter] = (float(aggregated_unit[parameter]) + float(unit[parameter]))/2
                     elif unit[parameter]:
                         aggregated_unit[parameter] = float(unit[parameter])
                 for parameter in sum_parameters:
-                    unit[parameter]=search_data(unit,unit_types,unit["entity"],[datayear],parameter)
+                    unit[parameter]=search_data(unit,unit_types,unit["technology"],[datayear],parameter)
                     if aggregated_unit[parameter] and unit[parameter]:
                         aggregated_unit[parameter] = float(aggregated_unit[parameter]) + float(unit[parameter])
                     elif unit[parameter]:
                         aggregated_unit[parameter] = float(unit[parameter])
                 for parameter in cumulative_parameters:
                     if parameter == "capacity":
-                        lifetime=search_data(unit,unit_types,unit["entity"],[datayear],"lifetime")
+                        lifetime=search_data(unit,unit_types,unit["technology"],[datayear],"lifetime")
                         unit["capacity"]=decay_capacity(unit, lifetime, referenceyear, milestoneyears)
                     #else assume data is already in correct format
                     if aggregated_unit[parameter] and unit[parameter]:
@@ -563,7 +563,7 @@ def map_ppm_jaif(unit_ppm):
         dateout_ppm=None
     unit_jaif = {
         "commodity":fuel_ppm,
-        "entity":tech_ppm,
+        "technology":tech_ppm,
         "entitytype":set_ppm,
         "conversion_rate":eta_ppm,
         "capacity":cap_ppm,
@@ -652,7 +652,7 @@ def search_data(unit, unit_types, unit_type_key, years, parameter, data=None, mo
             data.append([year,datavalue])
     if len(data)==0:
         parameter_value = None
-        print(f"Cannot find parameter {parameter} for {unit["entity"]}")
+        print(f"Cannot find parameter {parameter} for {unit["technology"]}")
     elif len(years) > 1:
         parameter_value = {
         "index_type": "str",
