@@ -6,6 +6,7 @@
 To Do:
 - [ ] CC and H2
 - [ ] storage parameters
+- [ ] check datavalues (e.g. kW vs MW)
 
 Optional:
 - [ ] Currently, for some parameters that only require 1 value in jaif, new units use the first milestoneyear for its value  while in some instances it probably should use the average over the years.
