@@ -2,6 +2,16 @@
 # ppm: Capacity, Efficiency and lifetime (DateOut-DateIn or DateOut-2020)
 # tdr: 2020-2050, investment, FOM, efficiency
 
+"""
+To Do:
+- [ ] CC and H2
+- [ ] storage parameters
+
+Optional:
+- [ ] Currently, for some parameters that only require 1 value in jaif, new units use the first milestoneyear for its value  while in some instances it probably should use the average over the years.
+- [ ] aggregate all units by type and use them as another data (arche)type (probably requires moving loading of files from existin/new units to main file)
+"""
+
 import sys
 import csv
 import random
@@ -39,8 +49,8 @@ def main(geo,inf,rfy,msy,ppm,spd,
 
     #load data
     geomap = gpd.read_file(geo)
-    geomap = geomap[geomap["level"]==geolevel]
-    regions = geomap["id"].to_list()
+    geomap = geomap[geomap["level"]==geolevel]#used by units existing
+    regions = geomap["id"].to_list()#used by units new
     
     #format data
     existing_units(jaif,inf,rfy,ppm,geomap,referenceyear,list(msy.keys()),units_existing,commodities)
@@ -78,6 +88,7 @@ def existing_units(jaif,inf,rfy,ppm,geomap,referenceyear,milestoneyears,units_ex
             yearly_inflation[int(line[1])]=float(line[2])/100
     #print(yearly_inflation)#debugline
 
+    #load reference year data and convert to dictionary
     unit_types={}
     #could be done differently as unit_types[line[0]][line[1]][year][line[2]]
     for year,path in rfy.items():#only one entry
@@ -891,6 +902,7 @@ def map_ppm_jaif(unit_ppm):
     return unit_jaif
 
 def map_tdr_jaif(line_tdr):
+    #dictionary with name of technology in datafile to name in intermediate format
     map_tdr0={
         "biogas":"bioST",
         "biogas CC":"bioST+CC",
