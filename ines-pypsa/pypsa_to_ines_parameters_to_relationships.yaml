@@ -1,24 +1,27 @@
-Bus:
-  node:
-    set:
-      carrier:
-        position: 1
-Generator:
-  unit:
-    set:
-      carrier:
-        position: 1
-    to_node:
-      bus:
-        parameters:
-          capital_cost: investment_cost
-          marginal_cost: other_operational_cost
-          p_nom: capacity
-          ramp_limit_down: ramp_limit_down
-          ramp_limit_up: ramp_limit_up
-        position: 2
-Line:
-  link:
-    set:
-      carrier:
-        position: 1
+# PyPSA attributes that name other components and become INES relationships.
+# Read by both scripts. 'self' is the component itself, other names are its attributes.
+# Components not listed here (Link as unit, Process, Store, StorageUnit) are coded in the scripts.
+
+carrier_membership:               # carrier attribute -> membership in the carrier set
+  Bus: set__node
+  Generator: set__unit
+  Line: set__link
+  Transformer: set__link
+  Link: [set__link, set__unit]    # set__link for an INES link, set__unit for an INES unit
+  Process: set__unit
+  Store: set__node
+  StorageUnit: [set__node, set__link, set__unit]
+
+bus_relationships:
+  Generator:
+    - {ines: unit__to_node, order: [self, bus]}
+  Line:
+    - {ines: node__link__node, order: [bus0, self, bus1]}
+  Transformer:
+    - {ines: node__link__node, order: [bus0, self, bus1]}
+  Link:                           # when the Link is an INES link
+    - {ines: node__link__node, order: [bus0, self, bus1]}
+
+# The carrier of the bus is also written as the 'carrier' parameter of the INES flows
+# (unit__to_node, node__to_unit, node__link__node) that touch the bus.
+flow_carrier_from_bus: true

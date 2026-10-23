@@ -1,9 +1,44 @@
-#If multiple scenarios represented as different network files, change this to the scenario name between transforms
-Alternative: "PyPSA"
-#If invesments are allowed but p_nom and p_nom_mod are 0.0 this is set as capacity and number of existing units will be 0
-Default_module_capacity: 100
-#Change infinite lifetime to
-Infinite_lifetime: 100
-#Assume an interest rate
-Interest_rate: 0.05
+# Settings for pypsa_to_ines.py and ines_to_pypsa.py
 
+# PyPSA -> INES
+# Alternative and scenario written to the INES database. If several network files represent scenarios,
+# change the alternative between the transformations.
+Alternative: "PyPSA"
+Scenario: "PyPSA"
+# Entity names of the INES system and solve_pattern
+System_name: "system"
+Solve_pattern_name: "solve"
+# Capacity of one unit when an extendable asset has no p_nom_mod, p_nom or finite p_nom_max
+Default_module_capacity: 100
+# Lifetime used for annuity calculations when the PyPSA lifetime is infinite
+Infinite_lifetime: 100
+# Interest rate assumed when PyPSA has only the annuity (capital_cost) or no discount_rate
+Interest_rate: 0.05
+# Start time used when the PyPSA snapshots are not dates
+Default_start_time: "2030-01-01T00:00:00"
+# A bus with exactly one Store becomes a storage node (otherwise a separate storage node and a link are made)
+Merge_single_store_into_bus: true
+# A StorageUnit becomes a storage node + two-way link tied by an energy-to-power constraint (false: charge/discharge units)
+Storage_unit_as_link: true
+
+# INES -> PyPSA
+# Scenario of the INES database (null: the only scenario, otherwise all alternatives in database order)
+Ines_scenario: null
+# Solve pattern used for the time structure (null: the first one)
+Ines_solve_pattern: null
+# Carrier for buses whose carrier cannot be inferred from the INES data
+Default_bus_carrier: "AC"
+# p_nom used for commodity supply generators and for INES flows without a capacity
+Unlimited_capacity: 1000000
+# Node penalties (penalty_upward / penalty_downward) become slack generators
+Add_penalty_generators: true
+# An asset with existing units and investments becomes a fixed and an extendable component
+Split_existing_and_new: true
+# true: write overnight_cost + discount_rate (PyPSA >= 1.0); false: write the annuity as capital_cost
+Use_overnight_cost: true
+# Default_units_existing: units assumed to exist when an INES unit has a capacity but no units_existing and no investments
+Default_units_existing: 1
+# Both directions: INES periods are scaled to a year (like FlexTool). INES -> PyPSA: objective and generator
+# snapshot weightings of each period sum to 8760 h, store weightings keep the time step lengths.
+# PyPSA -> INES: CO2 limits are divided by the modelled years. false: weightings = time step lengths.
+Annualize_periods: true

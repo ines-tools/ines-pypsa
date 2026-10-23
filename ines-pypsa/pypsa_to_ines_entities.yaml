@@ -1,2 +1,46 @@
+# PyPSA component -> INES entity classes. Read by pypsa_to_ines.py and ines_to_pypsa.py.
+#
+# ines:    INES class(es) the component becomes (documentation; the logic is in the scripts)
+# suffix:  name suffixes for generated INES entities (or PyPSA components in the INES -> PyPSA direction)
+
 Bus:
-- node
+  ines: node                      # node_type balance (storage if a single Store is merged into it)
+Carrier:
+  ines: set                       # carrier set with set__node / set__unit / set__link members
+  fuel_node_suffix: "_fuel"       # carrier with co2_emissions -> commodity node feeding its generators
+Load:
+  ines: node.flow_profile         # loads are summed into the flow_profile of their bus node
+Generator:
+  ines: unit                      # unit__to_node to its bus (+ node__to_unit from the fuel node)
+Line:
+  ines: link                      # node__link__node (bus0, line, bus1); transport model
+Transformer:
+  ines: link
+Link:
+  ines: [link, unit]              # symmetric two-port link -> INES link, otherwise -> INES unit
+  reverse_unit_suffix: "_reverse" # unit for the bus1 -> bus0 direction when p_min_pu < 0
+  bind_constraint_suffix: "_bind" # constraint that keeps the unit counts of both directions equal
+Process:
+  ines: unit                      # ports with negative rate -> inputs, positive rate -> outputs
+Store:
+  ines: node                      # node_type storage
+  connection_link_suffix: "_connection"  # used when the store cannot be merged into its bus node
+StorageUnit:
+  ines: [node, link]              # storage node + two-way link to the bus; their counts are tied by a constraint
+  energy_to_power_constraint_suffix: "_energy_to_power"  # constraint_link_count_coefficient * links - storages = 0
+  # Charge and discharge units are used instead of the link when the link cannot hold the StorageUnit
+  # (asymmetric p_min_pu / p_max_pu, marginal_cost, p_dispatch_set or p_store_set) or Storage_unit_as_link is false.
+  charge_suffix: "_charge"
+  discharge_suffix: "_discharge"
+GlobalConstraint:
+  ines: set                       # co2 / capacity / energy limits on a set
+
+not_transformed_components: [ShuntImpedance, Shape, SubNetwork]
+
+# INES -> PyPSA
+ines_to_pypsa:
+  penalty_up_suffix: "_penalty_up"      # Generator for node penalty_upward
+  penalty_down_suffix: "_penalty_down"  # Generator (negative output) for node penalty_downward
+  spill_suffix: "_spill"               # Generator (negative output, p_nom 1) limited by node spill limits
+  reverse_link_suffix: "_reverse"       # second Link for lossy or asymmetric two-way INES links
+  new_capacity_suffix: "_new"           # extendable copy when an asset has existing units and investments

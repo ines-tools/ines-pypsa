@@ -1,19 +1,47 @@
-Generator:
-  unit:
-    committable:
-      false:
-        startup_method: no_startup
-      true:
-        startup_method: integer
-    p_nom_extendable:
-      false:
-        investment_method: not_allowed
-      true:
-        investment_method: period_limits
-Line:
-  link:
-    p_nom_extendable:
-      false:
-        investment_method: not_allowed
-      true:
-        investment_method: period_limits
+# Value mappings between PyPSA switches and INES methods. Read by both scripts.
+# to_ines: PyPSA value -> INES method; to_pypsa: INES method -> PyPSA value ('default' for anything else).
+
+committable:                      # Generator, Link, Process
+  ines: startup_method
+  to_ines: {true: integer, false: no_startup}  # PyPSA uses binary status unless optimised with linearized_unit_commitment
+  to_pypsa: {no_startup: false, default: true}
+
+extendable:                       # p_nom_extendable / s_nom_extendable / e_nom_extendable
+  ines: [investment_method, storage_investment_method]
+  to_ines:
+    false: not_allowed
+    true_without_limits: no_limits
+    true_with_limits: cumulative_limits
+  to_pypsa: {not_allowed: false, default: true}
+
+storage_cycling:                  # e_cyclic(_per_period) / cyclic_state_of_charge(_per_period)
+  ines: storage_state_binding_method
+  to_ines:
+    cyclic: leap_over_within_solve
+    cyclic_per_period: leap_over_within_period
+    not_cyclic: leap_over_forward_only
+  to_pypsa:
+    leap_over_within_solve: cyclic
+    leap_over_within_period: cyclic_per_period
+    fill_with_representatives: cyclic
+    fill_with_interlaced_representatives: cyclic
+    default: not_cyclic
+
+lifetime:                         # lifetime -> retirement_method
+  ines: [retirement_method, storage_retirement_method]
+  to_ines: {finite: retire_as_scheduled, infinite: not_retired}
+
+link_transfer:                    # Link / Line / Transformer -> INES link transfer_method
+  ines: transfer_method
+  to_ines:
+    lossless_no_cost: no_losses_no_cost
+    lossless_with_cost: only_cost
+    lossy_no_cost: only_losses
+    lossy_with_cost: regular_linear
+  one_way: [one_way]              # INES methods that become a one-directional PyPSA Link
+  lossless: [no_losses_no_cost, only_cost]
+  no_cost: [no_losses_no_cost, only_losses]
+
+global_constraint_sense:
+  to_ines: {"<=": less_than, ">=": greater_than, "==": equal}
+  to_pypsa: {less_than: "<=", greater_than: ">=", equal: "=="}

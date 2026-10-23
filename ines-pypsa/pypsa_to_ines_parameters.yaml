@@ -1,4 +1,236 @@
-Bus:
-  node:
-    x: x
-    y: y
+# Direct parameter mapping shared by pypsa_to_ines.py and ines_to_pypsa.py.
+#
+# direct_parameters: one PyPSA attribute <-> one INES parameter.
+#   component - PyPSA component
+#   pypsa     - PyPSA attribute (static or time series)
+#   role      - which INES entity of the component holds the parameter:
+#                 unit           INES unit (Generator, Link or Process as unit)
+#                 flow           main flow of the unit: unit__to_node to the bus for a Generator,
+#                                node__to_unit from bus0 for a Link / Process
+#                 link           INES link (Line, Transformer, symmetric two-port Link)
+#                 link_flow      node__link__node (bus0, link, bus1)
+#                 storage        INES storage node (Store, StorageUnit)
+#                 discharge      discharge unit of a StorageUnit
+#                 discharge_flow unit__to_node from the discharge unit to the bus
+#                 charge         charge unit of a StorageUnit
+#                 charge_flow    node__to_unit from the bus to the charge unit
+#   ines      - INES parameter
+#   factor    - ines_value = pypsa_value * factor. Number or
+#                 minutes     multiply by the length of a snapshot in minutes (snapshots -> minutes)
+#                 per_minute  divide by the length of a snapshot in minutes (p.u./snapshot -> p.u./minute)
+#   reverse   - false when ines_to_pypsa.py does this parameter in code (default true)
+#
+# Everything needing more logic (capacities and unit counts, investment costs and annuities, lifetimes,
+# carriers and fuels, loads, efficiencies of multi-port links, storage cycling and initial states,
+# time structure and global constraints) is coded in the scripts.
+
+direct_parameters:
+  - {component: Generator, pypsa: marginal_cost, role: flow, ines: other_operational_cost, reverse: false}
+  - {component: Generator, pypsa: p_max_pu, role: flow, ines: profile_limit_upper, reverse: false}
+  - {component: Generator, pypsa: p_min_pu, role: flow, ines: profile_limit_lower, reverse: false}
+  - {component: Generator, pypsa: ramp_limit_up, role: flow, ines: ramp_limit_up, factor: per_minute}
+  - {component: Generator, pypsa: ramp_limit_down, role: flow, ines: ramp_limit_down, factor: per_minute}
+  - {component: Generator, pypsa: start_up_cost, role: unit, ines: startup_cost}
+  - {component: Generator, pypsa: shut_down_cost, role: unit, ines: shutdown_cost}
+  - {component: Generator, pypsa: stand_by_cost, role: unit, ines: online_cost}
+  - {component: Generator, pypsa: min_up_time, role: unit, ines: min_uptime, factor: minutes}
+  - {component: Generator, pypsa: min_down_time, role: unit, ines: min_downtime, factor: minutes}
+
+  - {component: Link, pypsa: marginal_cost, role: flow, ines: other_operational_cost, reverse: false}
+  - {component: Link, pypsa: ramp_limit_up, role: flow, ines: ramp_limit_up, factor: per_minute}
+  - {component: Link, pypsa: ramp_limit_down, role: flow, ines: ramp_limit_down, factor: per_minute}
+  - {component: Link, pypsa: start_up_cost, role: unit, ines: startup_cost}
+  - {component: Link, pypsa: shut_down_cost, role: unit, ines: shutdown_cost}
+  - {component: Link, pypsa: stand_by_cost, role: unit, ines: online_cost}
+  - {component: Link, pypsa: min_up_time, role: unit, ines: min_uptime, factor: minutes}
+  - {component: Link, pypsa: min_down_time, role: unit, ines: min_downtime, factor: minutes}
+  - {component: Link, pypsa: marginal_cost, role: link, ines: operational_cost, reverse: false}
+  - {component: Link, pypsa: ramp_limit_up, role: link_flow, ines: ramp_limit_up, factor: per_minute}
+  - {component: Link, pypsa: ramp_limit_down, role: link_flow, ines: ramp_limit_down, factor: per_minute}
+
+  - {component: Process, pypsa: ramp_limit_up, role: flow, ines: ramp_limit_up, factor: per_minute}
+  - {component: Process, pypsa: ramp_limit_down, role: flow, ines: ramp_limit_down, factor: per_minute}
+  - {component: Process, pypsa: start_up_cost, role: unit, ines: startup_cost}
+  - {component: Process, pypsa: shut_down_cost, role: unit, ines: shutdown_cost}
+  - {component: Process, pypsa: stand_by_cost, role: unit, ines: online_cost}
+  - {component: Process, pypsa: min_up_time, role: unit, ines: min_uptime, factor: minutes}
+  - {component: Process, pypsa: min_down_time, role: unit, ines: min_downtime, factor: minutes}
+
+  - {component: Line, pypsa: s_max_pu, role: link, ines: availability}
+  - {component: Transformer, pypsa: s_max_pu, role: link, ines: availability}
+
+  - {component: Store, pypsa: e_max_pu, role: storage, ines: storage_state_upper_limit, reverse: false}
+  - {component: Store, pypsa: e_min_pu, role: storage, ines: storage_state_lower_limit, reverse: false}
+  - {component: Store, pypsa: standing_loss, role: storage, ines: storage_loss_from_stored_energy}
+  - {component: Store, pypsa: marginal_cost_storage, role: storage, ines: storage_cost_of_stored_energy}
+
+  - {component: StorageUnit, pypsa: standing_loss, role: storage, ines: storage_loss_from_stored_energy}
+  - {component: StorageUnit, pypsa: marginal_cost_storage, role: storage, ines: storage_cost_of_stored_energy}
+  - {component: StorageUnit, pypsa: efficiency_dispatch, role: discharge, ines: efficiency}
+  - {component: StorageUnit, pypsa: efficiency_store, role: charge, ines: efficiency}
+  - {component: StorageUnit, pypsa: marginal_cost, role: discharge_flow, ines: other_operational_cost}
+  - {component: StorageUnit, pypsa: p_max_pu, role: discharge_flow, ines: profile_limit_upper}
+
+# Explanations used in the conversion reports for parameters that are not transformed.
+not_transformed_reasons:
+  pypsa:
+    "*.type": PyPSA placeholder / standard type; INES has no equivalent.
+    "*.q_set": Reactive power is not in INES.
+    "*.control": Power flow control type is not in INES.
+    "*.marginal_cost_quadratic": INES costs are linear.
+    "*.ramp_limit_start_up": INES has no separate start-up ramp limit.
+    "*.ramp_limit_shut_down": INES has no separate shut-down ramp limit.
+    "*.up_time_before": INES has no initial unit commitment status.
+    "*.down_time_before": INES has no initial unit commitment status.
+    "*.p_init": INES has no initial dispatch for ramping.
+    "*.maintainable": INES has no maintenance scheduling.
+    "*.maintenance_duration": INES has no maintenance scheduling.
+    "*.maintenance_pu": INES has no maintenance scheduling.
+    "*.maintenance_events": INES has no maintenance scheduling.
+    "*.length": INES has no line length (costs must already include it).
+    "*.terrain_factor": INES has no terrain factor (costs must already include it).
+    "*.sign": INES has no sign switch for production / consumption.
+    "*.x": Line reactance is not in INES (links are a transport model).
+    "*.r": Line resistance is not in INES.
+    "*.g": Line conductance is not in INES.
+    "*.b": Line susceptance is not in INES.
+    "*.num_parallel": Not in INES.
+    "*.v_ang_min": Voltage angles are not in INES.
+    "*.v_ang_max": Voltage angles are not in INES.
+    "*.delay": INES has no delayed delivery of energy.
+    "*.cyclic_delay": INES has no delayed delivery of energy.
+    "*.p_set": Only transformed for non-extendable assets with a capacity (as a fixed profile).
+    "*.e_set": Only transformed for non-extendable stores with a capacity.
+    "*.state_of_charge_set": Only transformed for non-extendable storage units with a capacity.
+    "*.weight": Network clustering weight is not in INES.
+    Bus.x: Coordinates are not in INES.
+    Bus.y: Coordinates are not in INES.
+    Bus.v_nom: Voltages are not in INES.
+    Bus.v_mag_pu_set: Voltages are not in INES.
+    Bus.v_mag_pu_min: Voltages are not in INES.
+    Bus.v_mag_pu_max: Voltages are not in INES.
+    Bus.unit: Not in INES.
+    Bus.location: Not in INES.
+    Carrier.color: Cosmetic.
+    Carrier.nice_name: Cosmetic.
+    Carrier.max_relative_growth: INES has no relative growth limit.
+    Load.carrier: INES demand has no carrier.
+    Transformer.tap_ratio: Not in INES.
+    Transformer.tap_side: Not in INES.
+    Transformer.tap_position: Not in INES.
+    Transformer.phase_shift: Not in INES.
+    Transformer.phase_shift_min: Not in INES.
+    Transformer.phase_shift_max: Not in INES.
+    Store.marginal_cost: INES storage nodes have no cost for the flow in or out of the storage.
+    Store.e_initial_per_period: INES fixes the storage state only at the start of the solve.
+    StorageUnit.spill_cost: INES has no spill cost (spill is limited to the inflow).
+    StorageUnit.state_of_charge_initial_per_period: INES fixes the storage state only at the start of the solve.
+    StorageUnit.p_dispatch_set: Only transformed for non-extendable storage units with a capacity.
+    StorageUnit.p_store_set: Only transformed for non-extendable storage units with a capacity.
+    GlobalConstraint: Only primary_energy (co2_emissions, <=), tech_capacity_expansion_limit and operational_limit are transformed.
+    ShuntImpedance: Not in INES.
+    Shape: Not in INES.
+    SubNetwork: Not in INES.
+
+  ines:
+    reserve: PyPSA has no reserves.
+    node__reserve: PyPSA has no reserves.
+    set__reserve: PyPSA has no reserves.
+    unit__node__reserve: PyPSA has no reserves.
+    link__node__reserve: PyPSA has no reserves.
+    constraint: PyPSA has no user constraints in the network data (use extra_functionality).
+    "*.constraint_flow_coefficient": PyPSA has no user constraints in the network data.
+    "*.constraint_unit_count_coefficient": PyPSA has no user constraints in the network data.
+    "*.constraint_online_coefficient": PyPSA has no user constraints in the network data.
+    "*.constraint_storage_count_coefficient": PyPSA has no user constraints in the network data.
+    "*.constraint_storage_state_coefficient": PyPSA has no user constraints in the network data.
+    "*.constraint_link_count_coefficient": PyPSA has no user constraints in the network data.
+    "*.constraint_demand_coefficient": PyPSA has no user constraints in the network data.
+    "*.time_resolution": PyPSA uses one resolution for the whole network.
+    "*.availability_forecasts": PyPSA network data has no forecasts.
+    "*.efficiency_forecasts": PyPSA network data has no forecasts.
+    "*.commodity_price_forecasts": PyPSA network data has no forecasts.
+    "*.flow_profile_forecasts": PyPSA network data has no forecasts.
+    "*.profile_limit_upper_forecasts": PyPSA network data has no forecasts.
+    "*.profile_limit_lower_forecasts": PyPSA network data has no forecasts.
+    "*.other_operational_cost_forecasts": PyPSA network data has no forecasts.
+    "*.operational_cost_forecasts": PyPSA network data has no forecasts.
+    "*.storage_state_fix_forecasts": PyPSA network data has no forecasts.
+    "*.storage_state_upper_limit_forecasts": PyPSA network data has no forecasts.
+    "*.storage_state_lower_limit_forecasts": PyPSA network data has no forecasts.
+    "*.storage_state_value_forecasts": PyPSA network data has no forecasts.
+    "*.fixed_co2_emissions": PyPSA counts only operational emissions of carriers.
+    "*.investment_co2_emissions": PyPSA counts only operational emissions of carriers.
+    "*.storage_fixed_co2_emissions": PyPSA counts only operational emissions of carriers.
+    "*.storage_investment_co2_emissions": PyPSA counts only operational emissions of carriers.
+    "*.salvage_value": PyPSA has no salvage value.
+    "*.storage_salvage_value": PyPSA has no salvage value.
+    "*.decommission_date": PyPSA retires assets by lifetime only.
+    "*.storage_decommission_date": PyPSA retires assets by lifetime only.
+    "*.is_non_synchronous": PyPSA has no inertia / non-synchronous constraints.
+    "*.inertia_constant": PyPSA has no inertia constraints.
+    "*.nox_emission_rate": PyPSA emissions are carrier attributes per primary energy; NOx is not mapped.
+    "*.so2_emission_rate": PyPSA emissions are carrier attributes per primary energy; SO2 is not mapped.
+    "*.ramp_cost": PyPSA has no ramping cost.
+    "*.units_invest_fix_period": PyPSA cannot fix investments per period (only p_nom_set for the total).
+    "*.units_retire_period": PyPSA has no scheduled retirements.
+    "*.links_invest_fix_period": PyPSA cannot fix investments per period.
+    "*.links_retire_period": PyPSA has no scheduled retirements.
+    "*.storages_invest_fix_period": PyPSA cannot fix investments per period.
+    "*.storages_retire_period": PyPSA has no scheduled retirements.
+    "*.units_invest_min_period": PyPSA has no per-period minimum investment for one asset.
+    "*.links_invest_min_period": PyPSA has no per-period minimum investment for one asset.
+    "*.storages_invest_min_period": PyPSA has no per-period minimum investment for one asset.
+    unit.cooling_time_to_tiers: PyPSA has no start-up tiers.
+    unit.startup_cost_tiers: PyPSA has no start-up tiers.
+    unit.startup_co2_emission: PyPSA has no start-up emissions.
+    unit.startup_co2_emission_tiers: PyPSA has no start-up emissions.
+    unit_flow.profile_method: Used to choose which profiles are applied.
+    unit_flow.flow_min_cumulative: Only transformed for generators (e_sum_min).
+    unit_flow.flow_max_cumulative: Only transformed for generators (e_sum_max).
+    node.commodity_price_ladder: PyPSA has no price ladders (use several generators).
+    node.storage_loss_absolute: PyPSA only has a relative storage loss.
+    node.storage_loss_from_storage_capacity: PyPSA only has a loss relative to the stored energy.
+    node.storage_state_value: PyPSA has no value for the stored energy.
+    node.storage_state_value_method: PyPSA has no value for the stored energy.
+    node.storage_state_upward_absolute_values: PyPSA has no value for the stored energy.
+    node.storage_state_upward_relative_values: PyPSA has no value for the stored energy.
+    node.storage_state_downward_absolute_values: PyPSA has no value for the stored energy.
+    node.storage_state_downward_relative_values: PyPSA has no value for the stored energy.
+    node.flow_annual: Only used with flow_scaling_method scale_to_annual.
+    node.commodity_limit: Only transformed for a commodity used by a single generator (e_sum_max).
+    node__node: PyPSA has no diffusion between buses.
+    link.flow_max_cumulative: PyPSA has no cumulative flow limit for a single link.
+    link.flow_min_cumulative: PyPSA has no cumulative flow limit for a single link.
+    node__link__node.ramp_method: Used to decide whether ramp limits apply.
+    set.capacity_margin: PyPSA has no capacity margin constraint.
+    set.capacity_margin_method: PyPSA has no capacity margin constraint.
+    set.inertia_limit: PyPSA has no inertia constraints.
+    set.non_synchronous_limit: PyPSA has no non-synchronous constraints.
+    set.nox_max_cumulative: PyPSA emissions are carrier attributes; NOx is not mapped.
+    set.nox_max_period: PyPSA emissions are carrier attributes; NOx is not mapped.
+    set.nox_price: PyPSA emissions are carrier attributes; NOx is not mapped.
+    set.so2_max_cumulative: PyPSA emissions are carrier attributes; SO2 is not mapped.
+    set.so2_max_period: PyPSA emissions are carrier attributes; SO2 is not mapped.
+    set.so2_price: PyPSA emissions are carrier attributes; SO2 is not mapped.
+    set.flow_max_instant: PyPSA has no instantaneous group flow limit.
+    set.flow_min_instant: PyPSA has no instantaneous group flow limit.
+    set.invest_equal_count: PyPSA has no equal-investment constraint.
+    set.network_type: PyPSA decides the network type from the component (Line or Link).
+    set.stochastic_method: PyPSA network data has no forecasts.
+    set.stochastic_forecast_weights: PyPSA network data has no forecasts.
+    set.stochastic_forecast_interpolation_factors: PyPSA network data has no forecasts.
+    set.flow_max_cumulative: Only transformed when all set members are generator flows of one carrier (operational_limit).
+    set.flow_min_cumulative: Only transformed when all set members are generator flows of one carrier (operational_limit).
+    set.max_cumulative: Only transformed when all set members share one carrier (tech_capacity_expansion_limit).
+    set.min_cumulative: Only transformed when all set members share one carrier (tech_capacity_expansion_limit).
+    set.invest_max_total: PyPSA has no total investment limit for a group (except max_growth per period).
+    set.invest_min_total: PyPSA has no total investment limit for a group.
+    set.invest_min_period: PyPSA has no minimum growth of a carrier.
+    solve_pattern.rolling_horizon: Rolling horizon is a PyPSA solve option (optimize_with_rolling_horizon), not network data.
+    solve_pattern.rolling_jump: Rolling horizon is a PyPSA solve option, not network data.
+    solve_pattern.solve_mode: Solve mode is a PyPSA solve option, not network data.
+    solve_pattern.stochastic_scope: PyPSA network data has no forecasts.
+    solve_pattern.includes_solve_pattern: PyPSA has no nested solves.
+    solve_pattern.time_resolution_scope: PyPSA uses one resolution for the whole network.
+    system.discount_rate: Only used for the objective weightings of investment periods.
