@@ -51,7 +51,8 @@ def main(input, output):
 
         # the for loops follow the PyPSA format
         # the datadicts follow the spine format
-        for component,table in n.components.items():
+        for component in n.all_components:
+            table = n.components[component]
             # sometimes it is good to refresh the session
             spinedb.refresh_session()
 
@@ -62,32 +63,33 @@ def main(input, output):
                 "entity_classes":[[
                     component, # class name
                     [], # connected entities
-                    table["description"], # description?
+                    None, # description
                     iconmap.get(component), # icon
                     False
                 ]],
                 "parameter_definitions":[],
             }
-            parameters = table["attrs"].to_dict(orient='index')
-            for parametername, dataframe in parameters.items():
+            attrs = table.attrs
+            attrs = attrs[attrs.status.str.startswith("Input")]
+            for parametername, row in attrs.iterrows():
+                default = row["default"]
                 datadict["parameter_definitions"].append([
                     component, # entity class
                     parametername, # parameter name
-                    dataframe["default"], # default value
+                    default if isinstance(default, (int, float, str, bool)) else None, # default value
                     None, # parameter value list
-                    dataframe["description"] # description
+                    row["description"] # description
                 ])
             # then stream it to the spine database
             api.import_data(spinedb,**datadict)
-            #spinedb.commit_session(component + " entity class and parameter definition")
 
-            if hasattr(n, table["list_name"]):
+            if component != "Network":
                 #Network has list_name in the table not actually in the data, therefore we need to check whether the attribute exists
 
                 print("add " + component + " entities and parameter values")
 
-                n_component = getattr(n, table["list_name"]).to_dict("index")
-                n_component_t = getattr(n, table["list_name"]+"_t")
+                n_component = table.static.to_dict("index")
+                n_component_t = table.dynamic
                 # correct dictionary for empty keys
                 #n_component = {k: v for k, v in n_component.items() if k}
                 for name,parameters in n_component.items():
@@ -154,6 +156,9 @@ def main(input, output):
             #new_values.append(val.isoformat())
             new_values.append(api.DateTime(val))
         datadict = {
+            "entity_classes":[["Network", [], None, None, False]],
+            "parameter_definitions":[["Network", p, None, None, None] for p in
+                                     ("snapshots", "investment_periods", "snapshot_weightings", "investment_period_weightings")],
             "entities":[['Network', 'Time', None]],
             "parameter_values":[],
         }
@@ -244,6 +249,5 @@ def main(input, output):
 
 if __name__ == "__main__":
     input = sys.argv[1] # nc file
-    output = sys.argv[2] # spine db
-    
+    output = sys.argv[2] # spine db url
     main(input, output)

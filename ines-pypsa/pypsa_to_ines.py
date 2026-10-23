@@ -1,1138 +1,958 @@
+"""Transform a PyPSA network into INES (Spine DB sqlite or JSON).
+
+Usage:
+    python pypsa_to_ines.py INPUT OUTPUT [--report REPORT.md]
+
+INPUT  PyPSA netcdf (.nc) or hdf5 (.h5) file, a folder of PyPSA csv files, or a Spine DB
+       (sqlite file / url) with PyPSA classes made by spine-pypsa/pypsa_to_spine.py.
+OUTPUT INES sqlite file, sqlite url (e.g. db_url@ines_db in Spine Toolbox) or .json file.
+
+The mapping is in the yaml files next to this script; settings in pypsa_to_ines_settings.yaml.
+"""
+
+import argparse
 import os
+import re
 import sys
-import yaml
+import warnings
+from collections import Counter, defaultdict
+
 import numpy as np
-from datetime import datetime
-from pathlib import Path
-import math
-from ines_tools import ines_transform
-import spinedb_api as api
-#from spinedb_api import purge
+import pandas as pd
+from spinedb_api import Array, DateTime, Map, TimeSeriesVariableResolution
 
-def main():
-    # transform spine db with pypsa data (source db) into a spine db that already has the ines structure (target_db)
-    with api.DatabaseMapping(url_db_in) as source_db:
-        with api.DatabaseMapping(url_db_out) as target_db:
-            # completely empty database
-            #purge.purge(target_db, purge_settings=None)
-            # add ines structure
-            # empty database except for ines structure
-            target_db.purge_items('parameter_value')
-            target_db.purge_items('entity')
-            target_db.purge_items('alternative')
-            target_db.refresh_session()
-            target_db.commit_session("Purged everything except for the existing ines structure")
-            # copy alternatives and scenarios
-            for alternative in source_db.get_alternative_items():
-                target_db.add_alternative_item(name=alternative["name"])
-            for scenario in source_db.get_scenario_items():
-                target_db.add_scenario_item(name=scenario["name"])
-            for scenario_alternative in source_db.get_scenario_alternative_items():
-                target_db.add_scenario_alternative_item(
-                    alternative_name=scenario_alternative["alternative_name"],
-                    scenario_name=scenario_alternative["scenario_name"],
-                    rank=scenario_alternative["rank"]
-                )
-            # commit changes
-            target_db.refresh_session()
-            target_db.commit_session("Added scenarios and alternatives")
-            #Add entities that are always there
-            target_db = add_base_entities(target_db)
+from ines_pypsa_common import (
+    PypsaData,
+    Report,
+    annuity_factor,
+    finite,
+    hours_to_duration,
+    is_number,
+    isnull,
+    load_mapping,
+    load_network,
+    write_ines,
+)
 
-            # copy entities from yaml files
-            print("copy entities")
-            target_db = ines_transform.copy_entities(source_db, target_db, entities_to_copy)
-            #copy parameters to relationships
-            print("create relationships from parameters")
-            target_db = ines_transform.transform_parameters_to_relationship_entities(source_db, target_db, parameters_to_relationships)
-            #copy parameters to entities, but the entity name is from a parameter
-            print("add direct parameters to different name")
-            target_db = ines_transform.transform_parameters_entity_from_parameter(source_db, target_db, parameters_to_parameters)   
-            # copy numeric parameters
-            print("add direct parameters")
-            target_db = ines_transform.transform_parameters(source_db, target_db, parameter_transforms)
-            # copy method parameters
-            print("add process methods")
-            target_db = ines_transform.process_methods(source_db, target_db, parameter_methods)
-            
-            # copy entities to parameters
-            #target_db = ines_transform.copy_entities_to_parameters(source_db, target_db, entities_to_parameters)
+FLOW_CLASSES = ("unit__to_node", "node__to_unit")
+HANDLED_COMPONENTS = ["Bus", "Carrier", "Load", "Generator", "Line", "Transformer", "Link", "Process",
+                      "Store", "StorageUnit", "GlobalConstraint"]
 
-            # manual scripts
-            # copy capacity specific parameters (manual scripting)
-            print("add time structure")
-            target_db = add_time_structure(source_db,target_db)
-            print("add market nodes")
-            target_db, market_carrier_list = create_market_nodes(source_db,target_db)
-            target_db = create_market_relationships(source_db, target_db, market_carrier_list)
 
-            print("loads to nodes")
-            target_db = map_loads_to_nodes(source_db,target_db)
-            print("links to units")
-            target_db = map_links_to_units(source_db,target_db)
-            print("storageUnits to nodes and units")
-            target_db = map_storageUnits_to_nodes_and_units(source_db,target_db)
-            
-            print("generator parameters")
-            target_db = add_generator_modified_parameters(source_db,target_db)
-            print("line parameters")
-            target_db = add_line_capacities_and_lifetimes(source_db,target_db)
-            print("store parameters")
-            target_db = add_store_capacities_and_lifetimes(source_db,target_db)
-            
-            #made based on imported data, so these have to be done last
-            print("adding methods")
-            target_db = add_profile_methods(target_db)
-            target_db = add_inflow_methods_and_state_fix(target_db)
-            print("adding node types")
-            target_db = add_node_types(target_db)
-            print("adding entity alternatives")
-            target_db = add_entity_alternative_items(target_db)
-            print("change possible same name entities")
-            target_db = change_same_name_entities(target_db)
-            target_db.commit_session("loads to nodes")
+class PypsaToInes:
+    def __init__(self, n, mapping, report):
+        if getattr(n, "has_scenarios", False) and n.has_scenarios:
+            raise ValueError("Stochastic PyPSA networks (n.scenarios) are not supported.")
+        self.n = n
+        self.d = PypsaData(n)
+        self.m = mapping
+        self.s = mapping["settings"]
+        self.cfg = mapping["entities"]
+        self.methods = mapping["methods"]
+        self.rel = mapping["relationships"]
+        self.report = report
+        self.entities = {}
+        self.values = {}
+        self.inactive = []
+        self.used_names = defaultdict(set)
+        self.direct = defaultdict(list)
+        for row in mapping["parameters"]["direct_parameters"]:
+            self.direct[row["component"]].append(row)
+        self.bus_carrier = {}
+        self.fuel_node = {}
+        self.carrier_flows = defaultdict(list)
+        self.carrier_links = defaultdict(list)
+        self.storage_nodes = set()
 
-# only the part below is specific to a tool
+    # ------------------------------------------------------------ output helpers
+    def ent(self, cls, *byname):
+        key = (cls, tuple(byname))
+        self.entities.setdefault(key, None)
+        if len(byname) == 1:
+            self.used_names[cls].add(byname[0])
+        return key
 
-# quick conversions using dictionaries
-# these definitions can be saved here or in a yaml configuration file
-'''
-    conversion_configuration
+    def put(self, entity, param, value):
+        if value is None:
+            return
+        self.values[(entity[0], entity[1], param)] = value
 
-A function that saves/loads from yaml files (currently only supported file type). The data is also available within this function but is only loaded when requested.
+    def got(self, entity, param):
+        return self.values.get((entity[0], entity[1], param))
 
-If a filepath is given and it exists, it will be loaded. If it does not exist, data from within this function will be saved to the file (if available).
+    def unique(self, cls, name, comp):
+        if name not in self.used_names[cls]:
+            return name
+        base = f"{name}_{comp.lower()}"
+        cand, i = base, 2
+        while cand in self.used_names[cls]:
+            cand, i = f"{base}_{i}", i + 1
+        self.report.note(f"{comp} {name}: renamed to {cand} because the INES {cls} name was already taken.")
+        return cand
 
-If a filename is given, the data from this function will be returned.
+    def active(self, comp, name, *ents):
+        v = self.d.get(comp, name, "active")
+        if v is not None and not isnull(v) and not bool(v):
+            for e in ents:
+                self.inactive.append((e[0], e[1], False))
 
-conversions : list of file paths or file names
-overwrite : boolean that determines whether an existing file is overwritten with the data inside this function
+    def iv(self, v, factor=1.0):
+        """PyPSA value -> INES value (float, bool, str or time series)."""
+        if v is None:
+            return None
+        if isinstance(v, pd.Series):
+            vals = v.astype(float).values * factor
+            if len(vals) and np.allclose(vals, vals[0]):
+                return float(vals[0])
+            return TimeSeriesVariableResolution(self.stamps, vals, False, False, index_name="time step")
+        if isinstance(v, (bool, np.bool_)):
+            return bool(v)
+        if is_number(v):
+            return float(v) * factor
+        return v
 
-return a list of conversion dictionaries
-'''
-def conversion_configuration(conversions = ['pypsa_to_ines_entities', 'pypsa_to_ines_parameters','pypsa_to_ines_parameter_methods',
-                                            'pypsa_to_ines_parameters_to_relationships','pypsa_to_ines_parameters_to_parameters'], overwrite=False):
-    returnlist = []
-    for conversion in conversions:
-        # default is data from within this function
-        convertname = conversion
-        load = False
-        save = False
+    def factor(self, f):
+        if f is None:
+            return 1.0
+        if f == "minutes":
+            return self.step_minutes
+        if f == "per_minute":
+            return 1.0 / self.step_minutes
+        return float(f)
 
-        # check whether a file or name is passed and reconfigure this function accordingly
-        convertpath = Path(conversion)
-        if convertpath.suffix == '.yaml':
-            convertname = convertpath.stem
-            if convertpath.is_file() and not overwrite:
-                load = True
+    def apply_direct(self, comp, name, roles):
+        for row in self.direct[comp]:
+            ent = roles.get(row["role"])
+            if ent is None:
+                continue
+            v = self.d.value(comp, name, row["pypsa"])
+            if v is not None:
+                self.put(ent, row["ines"], self.iv(v, self.factor(row.get("factor"))))
+
+    def period_map(self, value):
+        return Map(list(self.period_names), [value] * len(self.period_names), index_name="period")
+
+    # ------------------------------------------------------------ main
+    def run(self):
+        self.build_time()
+        self.build_carriers()
+        self.build_buses()
+        self.build_loads()
+        self.build_generators()
+        self.build_lines("Line")
+        self.build_lines("Transformer")
+        self.build_links()
+        self.build_processes()
+        self.build_stores()
+        self.build_storage_units()
+        self.build_global_constraints()
+        self.finalize()
+        self.report_unused()
+
+    # ------------------------------------------------------------ time
+    def build_time(self):
+        n = self.n
+        snaps = n.snapshots
+        if n.has_investment_periods:
+            periods = [int(p) for p in n.investment_periods]
+            stamps = []
+            for p in periods:
+                ts = pd.DatetimeIndex(pd.to_datetime(snaps[snaps.get_level_values(0) == p].get_level_values(1)))
+                shift = p - ts[0].year
+                if shift:
+                    ts = pd.DatetimeIndex([t + pd.DateOffset(years=shift) for t in ts])
+                    self.report.note(f"Investment period {p}: snapshots moved by {shift} years to lie in the period year (INES has one timeline).")
+                stamps.append(ts)
+            self.period_names = [str(p) for p in periods]
+        else:
+            try:
+                ts = pd.DatetimeIndex(pd.to_datetime(snaps))
+            except (TypeError, ValueError):
+                ts = None
+            if ts is None or ts.year.min() < 1900:
+                w = n.snapshot_weightings.objective.values.astype(float)
+                start = pd.Timestamp(self.s.get("Default_start_time", "2030-01-01"))
+                ts = pd.DatetimeIndex([start + pd.Timedelta(hours=h) for h in np.concatenate([[0.0], np.cumsum(w)[:-1]])])
+                self.report.note(f"Snapshots are not dates; they were placed on a timeline starting {start} using the objective weightings as step lengths.")
+            stamps = [ts]
+            self.period_names = [str(ts[0].year)]
+        self.periods = periods if n.has_investment_periods else [None]
+        steps_all = []
+        self.period_steps = []
+        for ts in stamps:
+            diffs = np.asarray((ts[1:] - ts[:-1]).total_seconds(), dtype=float) / 3600.0 if len(ts) > 1 else np.array([])
+            if len(diffs):
+                steps = np.append(diffs, diffs[-1])
             else:
-                save = True
+                steps = np.array([float(n.snapshot_weightings.objective.iloc[0])])
+            self.period_steps.append(steps)
+            steps_all.extend(steps)
+        self.stamps = [t.to_pydatetime() for ts in stamps for t in ts]
+        if len(set(self.stamps)) != len(self.stamps):
+            raise ValueError("The PyPSA snapshots give duplicate time stamps; INES needs a unique timeline.")
+        self.step_hours = Counter(np.round(steps_all, 9)).most_common(1)[0][0]
+        self.step_minutes = self.step_hours * 60.0
+        w = n.snapshot_weightings
+        steps_all = np.asarray(steps_all, dtype=float)
+        if not np.allclose(w.stores.values.astype(float), steps_all):
+            self.report.note("PyPSA store weightings differ from the time step lengths; INES storages use the time steps.")
+        offset = 0
+        for k, steps in enumerate(self.period_steps):
+            seg = slice(offset, offset + len(steps))
+            offset += len(steps)
+            ratio = w.objective.values[seg].astype(float) / steps
+            if not np.allclose(ratio, ratio[0]) or not np.allclose(w.generators.values[seg].astype(float), w.objective.values[seg].astype(float)):
+                self.report.note(f"Period {self.period_names[k]}: snapshot weightings are not proportional to the time steps; the representative weights are lost in INES.")
+            elif abs(w.objective.values[seg].sum() - 8760.0) > 1e-3 * 8760:
+                self.report.note(f"Period {self.period_names[k]}: snapshot weightings sum to {w.objective.values[seg].sum():.1f} h; INES models scale a period to a year, so costs keep their ratio but the objective scales.")
+        if len(set(np.round(steps_all, 9))) > 1:
+            self.report.note(f"Snapshots have several step lengths; INES time_resolution set to the most common one ({self.step_hours} h), the timeline keeps the actual steps.")
+        self.total_hours = float(w.generators.sum())
+        nyears = n.nyears
+        if isinstance(nyears, pd.Series):
+            if not np.allclose(nyears.values, nyears.values[0]):
+                self.report.note("Investment periods model different numbers of hours; costs were scaled with their mean.")
+            nyears = float(nyears.mean())
+        self.nyears = float(nyears) or 1.0
 
-        if load:
-            # load data from file
-            with open(convertpath,'r') as file:
-                returnlist.append(yaml.safe_load(file))
-        else:
-            # get data from within this function
-            convertdict = None
-            if convertname == 'pypsa_to_ines_entities':
-                convertdict = {
-                    'Bus': ['node'],
-                    'Carrier': ['set'],
-                    'Generator': ['unit'],
-                    'Line': ['link']
-                }
-            if convertname == 'pypsa_to_ines_parameters':
-                convertdict = {
-                    'Bus': {
-                        'node':{
-                        }
-                    },
-                    'Carrier':{
-                        'set':{
-                        },
-                    },
-                    'Generator':{
-                        'unit':{
-                            'efficiency': 'efficiency',
-                            'shut_down_cost': 'shutdown_cost',
-                            'start_up_cost': 'startup_cost',
-                        }
-                    },
-                    'Line':{
-                        'link':{
-                        }    
-                    },
-                }
-            if convertname == 'pypsa_to_ines_parameter_methods':
-                convertdict = {
-                    'Generator': {
-                        'unit':{
-                            'committable': {
-                                False: {
-                                    'startup_method': 'no_startup'
-                                },
-                                True: {
-                                    'startup_method': 'integer' # the MIP or linearized choice is model wide and not in the network file
-                                }
-                            },                          
-                        }
-                    }
-                }
-            if convertname == 'pypsa_to_ines_parameters_to_relationships':
-                convertdict = {
-                    'Generator': {
-                        'unit':{
-                            'to_node':{
-                                'bus': {
-                                    'position': 2,
-                                    'parameters':{
-                                        'marginal_cost': 'other_operational_cost',
-                                    }
-                                }
-                            },
-                            'set':{
-                                'carrier': {
-                                    'position': 1
-                                }
-                            }
-                        }
-                    },
-                    'Bus': {
-                        'node':{
-                            'set':{
-                                'carrier': {
-                                    'position': 1
-                                }
-                            }
-                        }
-                    },
-                    'Line': {
-                        'link':{
-                            'set':{
-                                'carrier': {
-                                    'position': 1 
-                                }
-                            },
-                            ('node','node'):{
-                                ('bus0','bus1'):{
-                                    'position':(1,3)
-                                },
-                            }
-                        }
-                    }
-                }
-            if convertname == 'pypsa_to_ines_parameters_to_parameters':
-                convertdict = {
-                    "Store":{ 
-                        "node":{
-                            "bus":{
-                                # make mapping to add to the node from bus parameter
-                                'e_max_pu': 'storage_state_upper_limit',
-                                'e_min_pu':'storage_state_lower_limit',
-                            }
-                        }
-                    }  
-                }
-            returnlist.append(convertdict)
-            if convertdict:
-                if save:
-                    # save data to a file
-                    with open(convertpath,'w') as file:
-                        yaml.safe_dump(convertdict, file)
+        system = self.ent("system", self.s.get("System_name", "system"))
+        self.put(system, "timeline", TimeSeriesVariableResolution(self.stamps, [1.0] * len(self.stamps), False, False, index_name="time step"))
+        for i, ts in enumerate(stamps):
+            p = self.ent("period", self.period_names[i])
+            self.put(p, "start_time", DateTime(ts[0].to_pydatetime()))
+            self.put(p, "duration", hours_to_duration(float(self.period_steps[i].sum())))
+            if n.has_investment_periods:
+                self.put(p, "years_represented", float(n.investment_period_weightings.years.iloc[i]))
             else:
-                print('The file does not exist and neither does the data for ' + convertname)
-    return returnlist
+                self.put(p, "years_represented", 1.0)
+        sp = self.ent("solve_pattern", self.s.get("Solve_pattern_name", "solve"))
+        self.put(sp, "period", Array(list(self.period_names)))
+        self.put(sp, "time_resolution", hours_to_duration(self.step_hours))
+        self.put(sp, "solve_mode", "single_solve")
+        if n.has_investment_periods:
+            rate = self._discount_rate()
+            if rate is not None:
+                self.put(system, "discount_rate", rate)
 
-# functions for specific mapping
+    def _discount_rate(self):
+        w = self.n.investment_period_weightings
+        years = w.years.values.astype(float)
+        obj = w.objective.values.astype(float)
+        p = np.array(self.periods, dtype=float)
+        if np.allclose(obj, years):
+            return 0.0
 
-#entities that PyPSA just assume exist
-def add_base_entities(target_db):
-    ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set',entity_byname=('AC',)), warn=True)
-    ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set',entity_byname=('DC',)), warn=True)
-    return target_db
+        def weights(r):
+            return np.array([sum((1 + r) ** -(p[i] - p[0] + k) for k in range(int(round(years[i])))) for i in range(len(p))])
 
+        grid = np.linspace(0.0, 0.3, 3001)
+        errs = [np.abs(weights(r) - obj).max() for r in grid]
+        best = int(np.argmin(errs))
+        if errs[best] <= 1e-3 * max(obj.max(), 1.0):
+            return float(round(grid[best], 6))
+        self.report.note("Investment period objective weightings do not match a constant discount rate; system.discount_rate not written.")
+        return None
 
-def add_time_structure(source_db,target_db):
-    alt_ent_class_source = [settings["Alternative"], ('Time',) ,'Network']
-    #timeline
-    ines_transform.assert_success(target_db.add_entity_item(entity_class_name='system',entity_byname=('Time',)), warn=True)
-    snapshots = ines_transform.get_parameter_from_DB(source_db,"snapshots", alt_ent_class_source)
-    step_length = []
-    for i in range(1, len(snapshots.values)):
-        diff = (snapshots.values[i].value-snapshots.values[i-1].value).total_seconds()/60.0/60.0
-        step_length.append(diff)
-    #this is kind of a guess, the last (or the first) time step length is not defined by a date-time array
-    step_length.append(diff)
-    time_series = api.TimeSeriesVariableResolution(snapshots.values, np.array(step_length), ignore_year = False, repeat=False, index_name="time step")
-    target_db = ines_transform.add_item_to_DB(target_db, 'timeline', [settings["Alternative"], ('Time',), 'system'], time_series)
-    
+    # ------------------------------------------------------------ carriers and buses
+    def carrier_member(self, comp, name, ent_cls, *element):
+        carrier = self.d.get(comp, name, "carrier")
+        if not carrier or isnull(carrier):
+            return None
+        self.ent("set", carrier)
+        self.ent(ent_cls, carrier, *element)
+        return carrier
 
-    #periods
-    ines_transform.assert_success(target_db.add_entity_item(entity_class_name='solve_pattern',entity_byname=('solve',)), warn=True)
-    #resolution
-    #This is just the difference between the first two timesteps ie. assumes constant resolution
-    hours_diff = (snapshots.values[1].value-snapshots.values[0].value).total_seconds() / 60.0/60.0
-    duration = api.Duration(str(int(hours_diff))+"h")
-    target_db = ines_transform.add_item_to_DB(target_db, 'time_resolution', [settings["Alternative"], ('solve',), 'solve_pattern'], duration)
-    periods = ines_transform.get_parameter_from_DB(source_db,"investment_periods", alt_ent_class_source)
-    if periods: #pypsa periods are always years
-        target_db = ines_transform.add_item_to_DB(target_db, 'period', [settings["Alternative"], ('solve',), 'solve_pattern'], periods)
-        for period in periods:
-            ines_transform.assert_success(target_db.add_entity_item(entity_class_name='period',entity_byname=(period,)), warn=True)
-            first = None
-            last = None
-            for i in snapshots.values:
-                if datetime.fromisoformat(i).year == period:
-                    if not first:
-                        first = i
-                    last = i
-            duration_hours = (datetime.fromisoformat(last)-datetime.fromisoformat(first)).total_seconds() / 60.0/60.0 + hours_diff
-            duration = api.Duration(str(duration_hours)+"h")
-            target_db = ines_transform.add_item_to_DB(target_db, 'duration', [settings["Alternative"], ('base_period',), 'period'], duration)
-            target_db = ines_transform.add_item_to_DB(target_db, 'start_time', [settings["Alternative"], ('base_period',), 'period'], first )
-        target_db = ines_transform.add_item_to_DB(target_db, 'period', [settings["Alternative"], ('solve',), 'period'], periods)
-    else:  #add base period
-        ines_transform.assert_success(target_db.add_entity_item(entity_class_name='period',entity_byname=("base_period",)), warn=True)
-        duration_hours = (snapshots.values[-1].value-snapshots.values[0].value).total_seconds() / 60.0/60.0
-        duration = api.Duration(str(int(duration_hours))+"h")
-        target_db = ines_transform.add_item_to_DB(target_db, 'duration', [settings["Alternative"], ('base_period',), 'period'], duration)
-        target_db = ines_transform.add_item_to_DB(target_db, 'start_time', [settings["Alternative"], ('base_period',), 'period'], api.DateTime(snapshots.values[0]))
-        target_db = ines_transform.add_item_to_DB(target_db, 'period', [settings["Alternative"], ('solve',), 'solve_pattern'], "base_period")
-        
-    #representative years
-    investment_period_weightings= ines_transform.get_parameter_from_DB(source_db,"investment_period_weightings", alt_ent_class_source)
-    
-    for i in investment_period_weightings.to_dict()["data"]:
-        if i[0] == 'years' and i[1] != None:
-            for j in i[1].to_dict():
-                target_db = ines_transform.add_item_to_DB(target_db, 'years_represented', [settings["Alternative"], (j[0],), 'period'], j[1])
-    
-    #weightings?
+    def membership_class(self, comp, kind=None):
+        cls = self.rel["carrier_membership"][comp]
+        if isinstance(cls, list):
+            return next(c for c in cls if c.endswith(kind)) if kind else cls[0]
+        return cls
 
-    return target_db
+    def build_carriers(self):
+        suffix = self.cfg["Carrier"].get("fuel_node_suffix", "_fuel")
+        for c in self.d.names("Carrier"):
+            if not c:
+                continue
+            self.ent("set", c)
+            co2 = self.d.value("Carrier", c, "co2_emissions")
+            if co2 is not None and co2 != 0:
+                node = self.ent("node", self.unique("node", c + suffix, "Carrier"))
+                self.put(node, "node_type", "commodity")
+                self.put(node, "co2_content", float(co2))
+                self.fuel_node[c] = node[1][0]
+            growth = self.d.value("Carrier", c, "max_growth")
+            if growth is not None and finite(growth):
+                self.put(("set", (c,)), "invest_max_period", self.period_map(float(growth)))
 
-#commodity carrier      
-#PyPSA has no commodity price, they are embedded to the marginal cost
-#only for co2_emissions  
-def create_market_nodes(source_db, target_db):
-    market_carrier_list = list()
-    for source_entity in source_db.get_entity_items(entity_class_name='Carrier'): 
-        alt_ent_class_source = [settings["Alternative"], source_entity["entity_byname"],'Carrier']
-        co2_emissions = ines_transform.get_parameter_from_DB(source_db, 'co2_emissions', alt_ent_class_source)
-        if isinstance(co2_emissions, float):
-            if co2_emissions > 0.0:
-                market_byname = (source_entity["name"]+"_market",)
-                ines_transform.assert_success(target_db.add_entity_item(entity_class_name='node',entity_byname=market_byname,
-                ), warn=True)
-                alt_ent_class_market = [settings["Alternative"], market_byname, 'node']
-                target_db = ines_transform.add_item_to_DB(target_db, 'co2_content', alt_ent_class_market, co2_emissions)
-                target_db = ines_transform.add_item_to_DB(target_db, 'node_type', alt_ent_class_market, 'commodity')
-                market_carrier_list.append(source_entity["name"])
-    #add c02 limit
-    period__limit = {}
-    for global_constraint in target_db.get_entity_items(entity_class_name='GlobalConstraint'):
-        alt_ent_class_source = [settings["Alternative"], global_constraint["entity_byname"], 'GlobalConstraint']
-        carrier_attribute = ines_transform.get_parameter_from_DB(source_db,"carrier_attribute", alt_ent_class_source)
-        if carrier_attribute == 'co2_emissions':
-            sense = ines_transform.get_parameter_from_DB(source_db,"sense", alt_ent_class_source)
-            if sense == '<=':
-                period = ines_transform.get_parameter_from_DB(source_db,"investment_period", alt_ent_class_source)
-                co2_limit = ines_transform.get_parameter_from_DB(source_db,"constant", alt_ent_class_source)
-                if period and not math.isnan(period):
-                    period__limit[period] = co2_limit
-                else:
-                    ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set',entity_byname=("co2")), warn=True)
-                    target_db = ines_transform.add_item_to_DB(target_db, 'co2_max_cumulative', alt_ent_class_market, co2_limit)
-                    for market_node in market_carrier_list:
-                        ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__node',entity_byname=("co2",market_node)), warn=True)
-    if period__limit:
-        co2_map = api.Map(list(period__limit.keys()),list(period__limit.values()))
-        ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set',entity_byname=("co2_periodic")), warn=True)
-        target_db = ines_transform.add_item_to_DB(target_db, 'co2_max_period', alt_ent_class_market, co2_map)
-        for market_node in market_carrier_list:
-            ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__node',entity_byname=("co2_periodic",market_node)), warn=True)
-            
-    return target_db, market_carrier_list
+    def build_buses(self):
+        for b in self.d.names("Bus"):
+            node = self.ent("node", b)
+            self.put(node, "node_type", "balance")
+            carrier = self.carrier_member("Bus", b, self.membership_class("Bus"), b)
+            self.bus_carrier[b] = carrier
+            self.apply_direct("Bus", b, {"node": node})
 
-def create_market_relationships(source_db, target_db, market_carrier_list):
-    for source_entity in source_db.get_entity_items(entity_class_name='Generator'): 
-        alt_ent_class_source = [settings["Alternative"], source_entity["entity_byname"],'Generator']
-        carrier = ines_transform.get_parameter_from_DB(source_db,"carrier", alt_ent_class_source)
-        if carrier in market_carrier_list:
-            relationship_byname = (carrier+"_market", source_entity["name"])
-            ines_transform.assert_success(target_db.add_entity_item(entity_class_name="node__to_unit",entity_byname=relationship_byname,
-                                            ), warn=True)
-    
-    return target_db
+    def flow_carrier(self, flow, bus):
+        if self.rel.get("flow_carrier_from_bus") and self.bus_carrier.get(bus):
+            self.put(flow, "carrier", self.bus_carrier[bus])
 
-def add_carrier_investment_limits(source_db,target_db):
-    periods = ines_transform.get_parameter_from_DB(source_db,"investment_periods", [settings["Alternative"], ('Time',) ,'Network'])
-    for source_entity in source_db.get_entity_items(entity_class_name='Carrier'):
-        alt_ent_class_source = [settings["Alternative"], source_entity["entity_byname"],'Carrier']
-        max_growth = ines_transform.get_parameter_from_DB(source_db,"max_growth", alt_ent_class_source)
-        if max_growth != math.inf:
-            periodic_limit = api.Map([str(x) for x in periods], [max_growth for x in periods], index_name="period")
-            target_db = ines_transform.add_item_to_DB(target_db, 'invest_max_period', [settings["Alternative"],(source_entity["name"],),'set']
-                                                    ,value=periodic_limit)    
+    def build_loads(self):
+        profiles = defaultdict(list)
+        for ld in self.d.names("Load"):
+            bus = self.d.get("Load", ld, "bus")
+            active = self.d.get("Load", ld, "active")
+            if active is not None and not bool(active):
+                self.report.skip("Load (inactive)", [ld], "Inactive loads are left out (INES flow_profile is per node).")
+                continue
+            p = self.d.get("Load", ld, "p_set")
+            sign = self.d.get("Load", ld, "sign")
+            profiles[bus].append((ld, p * sign))
+        for bus, items in profiles.items():
+            total = sum(v for _, v in items)
+            node = ("node", (bus,))
+            self.put(node, "flow_profile", self.iv(total))
+            self.put(node, "flow_scaling_method", "use_profile_directly")
+            if len(items) > 1 or items[0][0] != bus:
+                self.report.note(f"Loads {', '.join(i[0] for i in items)} were summed into the flow_profile of node {bus}.")
 
-    return target_db
-
-def map_links_to_units(source_db,target_db):
-    #check if the other direction is needed
-    for source_entity in source_db.get_entity_items(entity_class_name='Link'): 
-        alt_ent_class_source = [settings["Alternative"], source_entity["entity_byname"],'Link']
-        p_min_pu = ines_transform.get_parameter_from_DB(source_db,"p_min_pu", alt_ent_class_source)
-        bus0 = ines_transform.get_parameter_from_DB(source_db,"bus0", alt_ent_class_source)
-        bus1 = ines_transform.get_parameter_from_DB(source_db,"bus1", alt_ent_class_source)
-        carrier = ines_transform.get_parameter_from_DB(source_db,"carrier", alt_ent_class_source)
-        p_nom_extendable = ines_transform.get_parameter_from_DB(source_db,"p_nom_extendable", alt_ent_class_source)
-
-        unit1_name = source_entity["name"] +"_link_1"
-        unit1_byname = (unit1_name,)
-        #add entity
-        ines_transform.assert_success(target_db.add_entity_item(entity_class_name='unit',entity_byname=unit1_byname,
-                    ), warn=True)
-        ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__unit',entity_byname=(carrier,unit1_name),
-                    ), warn=True)
-        #add relationships
-        out_class = 'unit' + "__" + 'to_node'
-        out_entity_byname = (unit1_name, bus1)
-        in_class = 'node' + "__" + 'to_unit'
-        in_entity_byname = (bus0, unit1_name)
-        alt_ent_class_unit = [settings["Alternative"], (unit1_name,), 'unit'] 
-        alt_ent_class_unit_out = [settings["Alternative"], (unit1_name, bus1), 'unit__to_node']
-
-        names = [unit1_byname,out_class,out_entity_byname,in_class,in_entity_byname]
-        
-        target_db = create_link_unit_params(source_db, target_db, names, alt_ent_class_source)
-        
-        investment_binding_map = {
-            "1": (alt_ent_class_unit, -1),
-        }
-        target_db = ines_transform.add_item_to_DB(target_db, "interest_rate", alt_ent_class_unit, settings["Interest_rate"])
-        target_db = calculate_investment_cost(source_db, target_db, alt_ent_class_source, alt_ent_class_unit_out)
-        
-        #check if the other direction unit is needed
-        neg_flag = False
-        if isinstance(p_min_pu, api.TimeSeriesVariableResolution):
-            new_values = []
-            for value in p_min_pu.values:
-                if value < 0.0:
-                    neg_flag = True
-                new_values.append(value * -1)
-            p_min_pu.values = new_values
+    # ------------------------------------------------------------ capacities and investments
+    def capacity(self, comp, name, nom):
+        g = lambda a: self.d.get(comp, name, a)
+        p_nom, mod, ext = g(nom), g(f"{nom}_mod"), bool(g(f"{nom}_extendable"))
+        pmin, pmax, pset = g(f"{nom}_min"), g(f"{nom}_max"), g(f"{nom}_set")
+        p_nom = float(p_nom or 0.0)
+        mod = float(mod or 0.0)
+        if mod > 0:
+            cap = mod
+        elif p_nom > 0:
+            cap = p_nom
+        elif ext and finite(pmax) and pmax > 0:
+            cap = float(pmax)
         else:
-            if p_min_pu <0.0:
-                neg_flag =True
-                p_min_pu = -1 * p_min_pu
-        
-        if neg_flag:  #allows flow for both directions
-            unit2_name = source_entity["name"] +"_link_2"
-            unit2_byname = (unit2_name,)
-            ines_transform.assert_success(target_db.add_entity_item(entity_class_name='unit',entity_byname=unit2_byname,
-                    ), warn=True)
-            ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__unit',entity_byname=(carrier,unit2_name),
-                    ), warn=True)
-            
-            out_entity_byname = (unit2_name, bus0)
-            in_entity_byname = (bus1, unit2_name)
-            alt_ent_class_unit = [settings["Alternative"], unit2_byname, 'unit']
-            alt_ent_class_unit_out = [settings["Alternative"], out_entity_byname, 'unit__to_node']
-
-
-            names = [unit2_byname,out_class,out_entity_byname,in_class,in_entity_byname]
-            target_db = create_link_unit_params(source_db, target_db, names, alt_ent_class_source, p_min_pu = p_min_pu)
-
-            investment_binding_map["2"] = (alt_ent_class_unit,1)
-            if p_nom_extendable:
-                target_db = bind_investments(source_db, target_db, alt_ent_class_source, investment_binding_map)
-            target_db = ines_transform.add_item_to_DB(target_db, "interest_rate", alt_ent_class_unit, settings["Interest_rate"])
-            target_db = ines_transform.add_item_to_DB(target_db, "investment_cost", alt_ent_class_unit_out, 0.0)
-    return target_db
-
-def create_link_unit_params(source_db, target_db, names, alt_ent_class_source, p_min_pu = None):
-    committable = ines_transform.get_parameter_from_DB(source_db,"committable", alt_ent_class_source)
-    unit_byname = names[0]
-    out_class = names[1]
-    out_entity_byname = names[2]
-    in_class = names[3]
-    in_entity_byname = names[4]
-    alt_ent_class_unit = [settings["Alternative"], unit_byname, 'unit']
-    alt_ent_class_unit_out =[settings["Alternative"], out_entity_byname, out_class]
-    alt_ent_class_unit_in =[settings["Alternative"], in_entity_byname, in_class]
-
-    ines_transform.assert_success(target_db.add_entity_item(entity_class_name=out_class,entity_byname=out_entity_byname,
-                ), warn=True)
-    ines_transform.assert_success(target_db.add_entity_item(entity_class_name=in_class,entity_byname=in_entity_byname,
-                ), warn=True)
-    
-    #add parameters to entity
-    parameters_dict = {    
-        'efficiency': 'efficiency',
-        'shut_down_cost': 'shutdown_cost',
-        'start_up_cost': 'startup_cost',
-    }
-    for name, target_name in parameters_dict.items(): 
-        value = ines_transform.get_parameter_from_DB(source_db, name, alt_ent_class_source)
-        target_db = ines_transform.add_item_to_DB(target_db, target_name, alt_ent_class_unit, value)
-
-    #add methods
-    if committable:
-        value ='integer'
-    else:
-        value= 'no_startup'
-    target_db = ines_transform.add_item_to_DB(target_db, 'startup_method', alt_ent_class_unit,value=value)
-
-    #add parameters to relationships
-    parameters_dict = {
-        'marginal_cost': 'other_operational_cost',
-    }
-    for name, target_name in parameters_dict.items():
-        value = ines_transform.get_parameter_from_DB(source_db,name, alt_ent_class_source)
-        target_db = ines_transform.add_item_to_DB(target_db, target_name, alt_ent_class_unit_out, value)
-        target_db = ines_transform.add_item_to_DB(target_db, target_name, alt_ent_class_unit_in, value)
-    
-    if p_min_pu != None:
-        if isinstance(p_min_pu, api.TimeSeriesVariableResolution) or (isinstance(p_min_pu, float) and p_min_pu != 1.0):
-            target_db = ines_transform.add_item_to_DB(target_db, 'profile_limit_upper', alt_ent_class_unit_out, p_min_pu)
-    else:
-        value = ines_transform.get_parameter_from_DB(source_db, "p_max_pu", alt_ent_class_source)
-        if isinstance(value, api.TimeSeriesVariableResolution) or (isinstance(value, float) and value != 1.0):
-            target_db = ines_transform.add_item_to_DB(target_db, 'profile_limit_upper', alt_ent_class_unit_out, value)
-
-    relationship_list = [alt_ent_class_unit_out,alt_ent_class_unit_in]
-    target_db = add_unit_capacities(source_db,target_db, alt_ent_class_source, alt_ent_class_unit, relationship_list)
-    target_db = add_lifetime(source_db, target_db, alt_ent_class_source, alt_ent_class_unit)
-    target_db = add_ramps(source_db,target_db, alt_ent_class_source, relationship_list)
-    target_db = add_entity_alternative(source_db, target_db, alt_ent_class_source, alt_ent_class_unit)
-    for relationship in relationship_list:
-        target_db = add_entity_alternative(source_db, target_db, alt_ent_class_source, relationship)
-    
-    return target_db
-
-def map_loads_to_nodes(source_db,target_db):
-    for source_entity in source_db.get_entity_items(entity_class_name='Load'): 
-        alt_ent_class_source = [settings["Alternative"], source_entity["entity_byname"],'Load']
-        sign_param = ines_transform.get_parameter_from_DB(source_db,"sign",alt_ent_class_source)
-        p_set_param = ines_transform.get_parameter_from_DB(source_db,"p_set",alt_ent_class_source)
-        bus = ines_transform.get_parameter_from_DB(source_db,"bus",alt_ent_class_source)
-        alt_ent_class_target = [settings["Alternative"], (bus,) ,'node']
-
-        if isinstance(p_set_param, api.TimeSeriesVariableResolution):
-            new_values = []
-            for value in p_set_param.values:
-                new_values.append(value * sign_param)
-            p_set_param.values = new_values
+            cap = float(self.s.get("Default_module_capacity", 100))
+        res = {"cap": cap, "ext": ext, "integer": mod > 0, "p_nom": p_nom, "existing": 0.0 if ext else p_nom / cap}
+        if ext:
+            res["max"] = float(pmax) / cap if finite(pmax) else None
+            res["min"] = float(pmin) / cap if finite(pmin) and pmin > 0 else None
+            res["fix"] = float(pset) / cap if finite(pset) else None
+            limited = any(res[k] is not None for k in ("max", "min", "fix"))
+            res["method"] = self.methods["extendable"]["to_ines"]["true_with_limits" if limited else "true_without_limits"]
+            if p_nom > 0 and not (finite(pmin) and pmin >= p_nom):
+                self.report.note(f"{comp} {name}: PyPSA ignores {nom} of an extendable asset, so INES has no existing units for it.")
         else:
-            p_set_param = sign_param* p_set_param
+            res["method"] = self.methods["extendable"]["to_ines"][False]
+        return res
 
-        target_db = ines_transform.add_item_to_DB(target_db, "flow_profile", alt_ent_class_target, p_set_param)
-    
-    return target_db
+    def put_counts(self, ent, res, kind):
+        pre = {"unit": "units", "link": "links", "storage": "storages"}[kind]
+        method = "storage_investment_method" if kind == "storage" else "investment_method"
+        integer = "storage_investment_uses_integer" if kind == "storage" else "investment_uses_integer"
+        self.put(ent, f"{pre}_existing", float(res["existing"]))
+        self.put(ent, method, res["method"])
+        if res["ext"]:
+            for key in ("max", "min", "fix"):
+                if res.get(key) is not None:
+                    self.put(ent, f"{pre}_{key}_cumulative", res[key])
+            if res["integer"]:
+                self.put(ent, integer, True)
 
-def map_storageUnits_to_nodes_and_units(source_db,target_db):
-    for source_entity in source_db.get_entity_items(entity_class_name='StorageUnit'): 
-        alt_ent_class_source = [settings["Alternative"], source_entity["entity_byname"],'StorageUnit']
-        node_name = source_entity["name"]+"_node"
-        unit1_name = source_entity["name"]+"_unit_1"
-        unit2_name = source_entity["name"]+"_unit_2"
-        node_byname = (node_name,)
-        unit1_byname = (unit1_name,)
-        unit2_byname = (unit2_name,)
-        alt_ent_class_storage = [settings["Alternative"], node_byname, 'node']
+    def investment(self, comp, name, life_ent, cost_ent, storage=False, scale=1.0):
+        pre = "storage_" if storage else ""
+        g = lambda a: self.d.get(comp, name, a)
+        lifetime, overnight, disc, capital, fom = g("lifetime"), g("overnight_cost"), g("discount_rate"), g("capital_cost"), g("fom_cost")
+        life = float(lifetime) if finite(lifetime) else float(self.s.get("Infinite_lifetime", 100))
+        inv = rate = None
+        nyears = self.nyears
+        if finite(overnight):
+            inv = float(overnight)
+            rate = float(disc) if finite(disc) else float(self.s.get("Interest_rate", 0.05))
+        elif finite(capital) and capital != 0:
+            rate = float(self.s.get("Interest_rate", 0.05))
+            inv = float(capital) / annuity_factor(rate, life) / nyears
+            self.report.note("capital_cost (cost for the modelled horizon) was turned into investment_cost with the assumed interest rate and lifetime and the modelled years (PyPSA nyears); use overnight_cost and discount_rate in PyPSA to keep the original values.")
+        if inv is not None:
+            self.put(cost_ent, f"{pre}investment_cost", inv / scale)
+            self.put(life_ent, f"{pre}interest_rate", rate)
+        if finite(fom) and fom != 0:
+            self.put(cost_ent, f"{pre}fixed_cost", float(fom) / nyears / scale)
+            self.report.note("fom_cost (cost for the modelled horizon) was divided by the modelled years (PyPSA nyears) to get the annual INES fixed_cost.")
+        to_ines = self.methods["lifetime"]["to_ines"]
+        if finite(lifetime):
+            self.put(life_ent, f"{pre}lifetime", float(lifetime))
+            self.put(life_ent, f"{pre}retirement_method", to_ines["finite"])
+        else:
+            if inv is not None and not finite(overnight):
+                self.put(life_ent, f"{pre}lifetime", life)
+            self.put(life_ent, f"{pre}retirement_method", to_ines["infinite"])
+        build_year = self.d.value(comp, name, "build_year")
+        if build_year:
+            self.put(life_ent, f"{pre}commission_date", DateTime(f"{int(build_year)}-01-01T00:00:00"))
 
-        bus = ines_transform.get_parameter_from_DB(source_db,"bus", alt_ent_class_source)
-        carrier = ines_transform.get_parameter_from_DB(source_db,"carrier", alt_ent_class_source)
-        p_min_pu = ines_transform.get_parameter_from_DB(source_db,"p_min_pu", alt_ent_class_source)
-        max_hours = ines_transform.get_parameter_from_DB(source_db,"max_hours", alt_ent_class_source)
-        if max_hours > 0:
-            p_nom_extendable = ines_transform.get_parameter_from_DB(source_db,"p_nom_extendable", alt_ent_class_source)
+    def committable(self, comp, name, unit):
+        c = self.d.get(comp, name, "committable")
+        self.put(unit, "startup_method", self.methods["committable"]["to_ines"][bool(c)])
 
-            #add entity
-            ines_transform.assert_success(target_db.add_entity_item(entity_class_name='unit',entity_byname=unit1_byname), warn=True)
-            ines_transform.assert_success(target_db.add_entity_item(entity_class_name='node',entity_byname=node_byname), warn=True)
+    def bind_counts(self, name, coefficients):
+        """Equality constraint between unit / storage counts: sum(coefficient * count) = 0."""
+        cname = self.unique("constraint", name, "constraint")
+        con = self.ent("constraint", cname)
+        self.put(con, "constant", 0.0)
+        self.put(con, "sense", "equal")
+        for ent, param, coef in coefficients:
+            prev = self.got(ent, param)
+            keys = list(prev.indexes) if isinstance(prev, Map) else []
+            vals = list(prev.values) if isinstance(prev, Map) else []
+            self.put(ent, param, Map(keys + [cname], vals + [float(coef)], index_name="constraint"))
 
-            ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__unit',entity_byname=(carrier,unit1_name),
-                        ), warn=True)
-            ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__node',entity_byname=(carrier,node_name),
-                        ), warn=True)
-            
-            target_db = ines_transform.add_item_to_DB(target_db, 'node_type', alt_ent_class_storage, 'storage')
-            node_param_dict = {
-                'inflow': 'flow_profile',
-                'spill_cost': 'penalty_downward',
-            }
-            for name, target_name in node_param_dict.items():
-                value = ines_transform.get_parameter_from_DB(source_db, name, alt_ent_class_source)
-                target_db = ines_transform.add_item_to_DB(target_db, target_name, alt_ent_class_storage, value)
-            
-            standing_loss = ines_transform.get_parameter_from_DB(source_db, 'standing_loss', alt_ent_class_source)
-            if standing_loss:
-                if standing_loss > 0:
-                    target_db = ines_transform.add_item_to_DB(target_db, 'storage_loss_from_stored_energy', alt_ent_class_storage, standing_loss)
+    # ------------------------------------------------------------ generators
+    def build_generators(self):
+        for g in self.d.names("Generator"):
+            bus = self.d.get("Generator", g, "bus")
+            u = self.ent("unit", self.unique("unit", g, "Generator"))
+            uname = u[1][0]
+            flow = self.ent("unit__to_node", uname, bus)
+            self.flow_carrier(flow, bus)
+            carrier = self.carrier_member("Generator", g, self.membership_class("Generator"), uname)
+            if carrier:
+                self.carrier_flows[carrier].append((flow, bus, self.d.get("Generator", g, "p_nom_extendable")))
+            res = self.capacity("Generator", g, "p_nom")
+            self.put(flow, "capacity", res["cap"])
+            self.put_counts(u, res, "unit")
+            self.investment("Generator", g, u, flow)
+            self.committable("Generator", g, u)
+            self.apply_direct("Generator", g, {"unit": u, "flow": flow})
+            self.fixed_profile("Generator", g, "p_set", flow, res)
+            eff = self.d.value("Generator", g, "efficiency")
+            if carrier in self.fuel_node:
+                self.ent("node__to_unit", self.fuel_node[carrier], uname)
+                self.put(u, "conversion_method", "constant_efficiency")
+                self.put(u, "efficiency", self.iv(eff) if eff is not None else 1.0)
+            elif eff is not None:
+                self.put(u, "efficiency", self.iv(eff))
+            for attr, param in (("e_sum_max", "flow_max_cumulative"), ("e_sum_min", "flow_min_cumulative")):
+                v = self.d.get("Generator", g, attr)
+                if finite(v):
+                    self.put(flow, param, float(v) / self.total_hours)
+                    if len(self.period_names) > 1:
+                        self.report.note(f"Generator {g}: {attr} applies to the whole horizon in PyPSA but {param} applies to each period in INES.")
+            self.active("Generator", g, u, flow)
 
-            target_db = add_storage_binding_and_fixing(source_db, target_db, alt_ent_class_source, alt_ent_class_storage)
-            target_db = add_storage_capacities(source_db, target_db, alt_ent_class_source, alt_ent_class_storage)
-            target_db = add_lifetime(source_db, target_db, alt_ent_class_source, alt_ent_class_storage, storage= True)
-            target_db = add_entity_alternative(source_db, target_db, alt_ent_class_source, alt_ent_class_storage) 
-            
-            #add relationships
-            out_class = 'unit' + "__" + 'to_node'
-            out_entity_byname = (unit1_name, bus)
-            in_class = 'node' + "__" + 'to_unit'
-            in_entity_byname = (node_name, unit1_name)
-            names = [unit1_byname,out_class,out_entity_byname,in_class,in_entity_byname]
-            target_db = create_storageUnit_params(source_db, target_db, names, alt_ent_class_source)
-            
-            investment_binding_map = {
-                "storage" : ([settings["Alternative"], node_byname, 'node'], -1/max_hours),
-                "out": ([settings["Alternative"], unit1_byname, 'unit'], 1),
-            }
-            target_db = ines_transform.add_item_to_DB(target_db, "storage_interest_rate", alt_ent_class_storage, settings["Interest_rate"])
-            target_db = calculate_investment_cost(source_db, target_db, alt_ent_class_source, alt_ent_class_storage, storage= True, max_hours = max_hours)
-            
-            #check if the other direction unit is needed
-            neg_flag = False
-            if isinstance(p_min_pu, api.TimeSeriesVariableResolution):
-                new_values = []
-                for value in p_min_pu.values:
-                    if value < 0.0:
-                        neg_flag = True
-                    new_values.append(value * -1)
-                p_min_pu.values = new_values
+    def fixed_profile(self, comp, name, attr, flow, res):
+        v = self.d.value(comp, name, attr)
+        if v is None:
+            return
+        if not res["ext"] and res["p_nom"] > 0:
+            self.put(flow, "profile_fix", self.iv(v / res["p_nom"]))
+        else:
+            self.d.used.discard((comp, name, attr))
+
+    # ------------------------------------------------------------ lines and transformers
+    def build_lines(self, comp):
+        for ln in self.d.names(comp):
+            bus0, bus1 = self.d.get(comp, ln, "bus0"), self.d.get(comp, ln, "bus1")
+            link = self.ent("link", self.unique("link", ln, comp))
+            lname = link[1][0]
+            nln = self.ent("node__link__node", bus0, lname, bus1)
+            self.flow_carrier(nln, bus0)
+            carrier = self.carrier_member(comp, ln, self.membership_class(comp), lname)
+            if carrier:
+                self.carrier_links[carrier].append((link, bus0, bus1, self.d.get(comp, ln, "s_nom_extendable")))
+            res = self.capacity(comp, ln, "s_nom")
+            self.put(link, "capacity", res["cap"])
+            self.put_counts(link, res, "link")
+            self.investment(comp, ln, link, link)
+            self.put(link, "transfer_method", self.methods["link_transfer"]["to_ines"]["lossless_no_cost"])
+            self.apply_direct(comp, ln, {"link": link, "link_flow": nln})
+            self.active(comp, ln, link, nln)
+        if self.d.names(comp):
+            self.report.note(f"{comp}s became INES links (transport model): impedances and Kirchhoff's voltage law are not represented.")
+
+    # ------------------------------------------------------------ links
+    def port_indices(self, comp):
+        return sorted(int(c[3:]) for c in self.d.static(comp).columns if re.fullmatch(r"bus\d+", c))
+
+    def ports(self, comp, name):
+        """(bus, coefficient per unit of activity) of a Link or Process; negative coefficient = input."""
+        out = []
+        for k in self.port_indices(comp):
+            bus = self.d.get(comp, name, f"bus{k}")
+            if not bus or isnull(bus):
+                continue
+            if comp == "Process":
+                out.append((bus, self.d.get(comp, name, f"rate{k}")))
+            elif k == 0:
+                out.append((bus, -1.0))
             else:
-                if p_min_pu <0.0:
-                    neg_flag =True
-                    p_min_pu = -1 * p_min_pu
-            if neg_flag:
-                ines_transform.assert_success(target_db.add_entity_item(entity_class_name='unit',entity_byname=unit2_byname,
-                        ), warn=True)
-                
-                ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__unit',entity_byname=(carrier,unit2_name),
-                        ), warn=True)
-                
-                out_class = 'unit' + "__" + 'to_node'
-                out_entity_byname = (unit2_name, node_name)
-                in_class = 'node' + "__" + 'to_unit'
-                in_entity_byname = (bus, unit2_name)
-                names = [unit2_byname,out_class,out_entity_byname,in_class,in_entity_byname]
-                target_db = create_storageUnit_params(source_db, target_db, names, alt_ent_class_source, p_min_pu = p_min_pu)
+                out.append((bus, self.d.get(comp, name, "efficiency" if k == 1 else f"efficiency{k}")))
+        return out
 
-                investment_binding_map["in"] = ([settings["Alternative"],unit2_byname, 'unit'],1)
-
-            if p_nom_extendable:
-                target_db = bind_investments(source_db, target_db, alt_ent_class_source, investment_binding_map, storage= True)
-        
-        return target_db
-
-def create_storageUnit_params(source_db, target_db, names, alt_ent_class_source, p_min_pu = None):
-    unit_byname = names[0]
-    out_class = names[1]
-    out_entity_byname = names[2]
-    in_class = names[3]
-    in_entity_byname = names[4]
-    alt_ent_class_unit = [settings["Alternative"], unit_byname, 'unit']
-    alt_ent_class_out = [settings["Alternative"], out_entity_byname, out_class]
-    alt_ent_class_in = [settings["Alternative"], in_entity_byname, in_class]
-    relationship_list = [alt_ent_class_out, alt_ent_class_in]
-    
-    ines_transform.assert_success(target_db.add_entity_item(entity_class_name=out_class,entity_byname=out_entity_byname,
-                ), warn=True)
-    ines_transform.assert_success(target_db.add_entity_item(entity_class_name=in_class,entity_byname=in_entity_byname,
-                ), warn=True)
-
-    if p_min_pu != None:
-        value = ines_transform.get_parameter_from_DB(source_db, 'efficiency_store', alt_ent_class_source)
-        target_db = ines_transform.add_item_to_DB(target_db, 'efficiency', alt_ent_class_unit, value)
-        marginal_cost = ines_transform.get_parameter_from_DB(source_db, 'marginal_cost', alt_ent_class_source)
-        target_db = ines_transform.add_item_to_DB(target_db, 'other_operational_cost', alt_ent_class_out,  marginal_cost)
-    else:
-        value = ines_transform.get_parameter_from_DB(source_db, 'efficiency_dispatch', alt_ent_class_source)
-        target_db = ines_transform.add_item_to_DB(target_db, 'efficiency', alt_ent_class_unit, value)
-
-    if p_min_pu != None:
-        if isinstance(p_min_pu, api.TimeSeriesVariableResolution) or (isinstance(p_min_pu, float) and p_min_pu != 1.0):
-            target_db = ines_transform.add_item_to_DB(target_db, 'profile_limit_upper', alt_ent_class_out, p_min_pu)
-    else:
-        value = ines_transform.get_parameter_from_DB(source_db, "p_max_pu", alt_ent_class_source)
-        if isinstance(value, api.TimeSeriesVariableResolution) or (isinstance(value, float) and value != 1.0):
-            target_db = ines_transform.add_item_to_DB(target_db, 'profile_limit_upper', alt_ent_class_out, value)
-
-    target_db = add_ramps(source_db,target_db, alt_ent_class_source, relationship_list)
-    target_db = add_unit_capacities(source_db,target_db, alt_ent_class_source, alt_ent_class_unit, relationship_list)
-    target_db = add_lifetime(source_db, target_db, alt_ent_class_source, alt_ent_class_unit)
-    target_db = add_entity_alternative(source_db, target_db, alt_ent_class_source, alt_ent_class_unit)
-    for relationship in relationship_list:
-        target_db = add_entity_alternative(source_db, target_db, alt_ent_class_source, relationship)
-    #all of the invesment cost is set to the storage
-    target_db = ines_transform.add_item_to_DB(target_db, "investment_cost", alt_ent_class_out, 0.0)
-
-    return target_db
-
-#change capacities to the form of capacities per unit and number of units
-def add_unit_capacities(source_db,target_db,alt_ent_class_source, alt_ent_class_unit, alt_ent_class_relationship_list):
-     
-    p_nom = ines_transform.get_parameter_from_DB(source_db, 'p_nom', alt_ent_class_source)
-    p_nom_max = ines_transform.get_parameter_from_DB(source_db, 'p_nom_max', alt_ent_class_source)
-    p_nom_min = ines_transform.get_parameter_from_DB(source_db, 'p_nom_min', alt_ent_class_source)
-    p_nom_mod = ines_transform.get_parameter_from_DB(source_db, 'p_nom_mod', alt_ent_class_source)
-    p_nom_extendable = ines_transform.get_parameter_from_DB(source_db,"p_nom_extendable", alt_ent_class_source)
-
-    if p_nom_mod > 0.0:
-        unit_number = p_nom/p_nom_mod
-        max_units = p_nom_max/p_nom_mod
-        min_units = p_nom_min/p_nom_mod
-        capacity = p_nom_mod
-    elif p_nom > 0.0:
-        unit_number = 1
-        max_units = round(p_nom_max/p_nom,1)
-        min_units = round(p_nom_min/p_nom,1)
-        capacity = p_nom
-    else:
-        unit_number = 0
-        min_units = 0
-        max_units = p_nom_max
-        capacity = settings["Default_module_capacity"]
-    
-    for alt_ent_class_relationship in alt_ent_class_relationship_list:
-        target_db = ines_transform.add_item_to_DB(target_db, 'capacity', alt_ent_class_relationship, capacity)
-    target_db = ines_transform.add_item_to_DB(target_db, 'units_existing', alt_ent_class_unit, unit_number)
-    if min_units > 0.0:
-        target_db = ines_transform.add_item_to_DB(target_db, 'units_min_cumulative', alt_ent_class_unit, min_units)
-
-    if p_nom_extendable:
-        if isinstance(p_nom_max,float) and p_nom_max != math.inf:
-            value = 'cumulative_limits'
-            target_db = ines_transform.add_item_to_DB(target_db, 'units_max_cumulative', alt_ent_class_unit, max_units)
-        else:
-            value = 'no_limits'
-    else:
-        value = 'not_allowed'
-    target_db = ines_transform.add_item_to_DB(target_db, 'investment_method', alt_ent_class_unit, value=value)
-
-    return target_db
-
-def add_storage_capacities(source_db, target_db, alt_ent_class_source, alt_ent_class_target):
-    
-    max_hours = ines_transform.get_parameter_from_DB(source_db, 'max_hours', alt_ent_class_source)
-    p_nom = ines_transform.get_parameter_from_DB(source_db, 'p_nom', alt_ent_class_source)
-    p_nom_max = ines_transform.get_parameter_from_DB(source_db, 'p_nom_max', alt_ent_class_source)
-    p_nom_min = ines_transform.get_parameter_from_DB(source_db, 'p_nom_min', alt_ent_class_source)
-    p_nom_mod = ines_transform.get_parameter_from_DB(source_db, 'p_nom_mod', alt_ent_class_source)
-    p_nom_extendable = ines_transform.get_parameter_from_DB(source_db,"p_nom_extendable", alt_ent_class_source)
-
-    if p_nom_mod > 0.0:
-        unit_number = p_nom/p_nom_mod
-        max_units = p_nom_max/p_nom_mod
-        min_units = p_nom_min/p_nom_mod
-        capacity = max_hours * p_nom_mod
-    elif p_nom > 0.0:
-        unit_number = 1
-        max_units = round(p_nom_max/p_nom,1)
-        min_units = round(p_nom_min/p_nom,1)
-        capacity = max_hours * p_nom
-    else:
-        unit_number = 0
-        min_units = 0
-        max_units = p_nom_max
-        capacity = settings["Default_module_capacity"]
-    target_db = ines_transform.add_item_to_DB(target_db, 'storage_capacity', alt_ent_class_target, capacity)
-    target_db = ines_transform.add_item_to_DB(target_db, 'storages_existing', alt_ent_class_target, unit_number)
-    if min_units > 0.0:
-        target_db = ines_transform.add_item_to_DB(target_db, 'storages_min_cumulative', alt_ent_class_target, min_units)
-
-    if p_nom_extendable:
-        if isinstance(p_nom_max,float) and p_nom_max != math.inf:
-            value = 'cumulative_limits'
-            target_db = ines_transform.add_item_to_DB(target_db, 'storages_max_cumulative', alt_ent_class_target, max_units)
-        else:
-            value = 'no_limits'
-    else:
-        value = 'not_allowed'
-    target_db = ines_transform.add_item_to_DB(target_db, 'storage_investment_method', alt_ent_class_target, value=value)
-
-    return target_db
-
-
-#these do them for all generators, links and stores
-def add_generator_modified_parameters(source_db, target_db):
-    for source_entity in source_db.get_entity_items(entity_class_name='Generator'):
-        alt_ent_class_source = [settings["Alternative"], source_entity["entity_byname"],'Generator']
-        alt_ent_class_unit = [settings["Alternative"], (source_entity["name"],),'unit']
-
-        bus = ines_transform.get_parameter_from_DB(source_db, 'bus', alt_ent_class_source)
-        alt_ent_class_relationship = [settings["Alternative"], (source_entity["name"],bus),'unit__to_node']
-
-        upper_limit = ines_transform.get_parameter_from_DB(source_db, 'p_max_pu', alt_ent_class_source)
-        lower_limit = ines_transform.get_parameter_from_DB(source_db, 'p_min_pu', alt_ent_class_source)
-        if isinstance(upper_limit, api.TimeSeriesVariableResolution) or (isinstance(upper_limit, float) and upper_limit != 1.0):
-            target_db = ines_transform.add_item_to_DB(target_db, 'profile_limit_upper', alt_ent_class_relationship, upper_limit)
-        if isinstance(lower_limit, api.TimeSeriesVariableResolution) or (isinstance(lower_limit, float) and lower_limit > 0.0):
-            target_db = ines_transform.add_item_to_DB(target_db, 'profile_limit_lower', alt_ent_class_relationship, lower_limit)
-
-        target_db = add_unit_capacities(source_db, target_db, alt_ent_class_source, alt_ent_class_unit,[alt_ent_class_relationship])
-        target_db = add_lifetime(source_db, target_db, alt_ent_class_source, alt_ent_class_unit)
-        target_db = ines_transform.add_item_to_DB(target_db, "interest_rate", alt_ent_class_unit, settings["Interest_rate"])
-        target_db = calculate_investment_cost(source_db, target_db, alt_ent_class_source, alt_ent_class_relationship)
-        target_db = add_ramps(source_db,target_db, alt_ent_class_source, [alt_ent_class_relationship])
-        target_db = add_entity_alternative(source_db, target_db, alt_ent_class_source, alt_ent_class_unit)
-        target_db = add_entity_alternative(source_db, target_db, alt_ent_class_source, alt_ent_class_relationship)
-        
-    return target_db
-
-def add_line_capacities_and_lifetimes(source_db, target_db):
-    for source_entity in source_db.get_entity_items(entity_class_name='Line'):
-        alt_ent_class_source = [settings["Alternative"], source_entity["entity_byname"],'Line']
-        alt_ent_class_target = [settings["Alternative"], (source_entity["name"],),'link']
-
-        s_nom = ines_transform.get_parameter_from_DB(source_db, 's_nom', alt_ent_class_source)
-        s_nom_max = ines_transform.get_parameter_from_DB(source_db, 's_nom_max', alt_ent_class_source)
-        s_nom_min = ines_transform.get_parameter_from_DB(source_db, 's_nom_min', alt_ent_class_source)
-        s_nom_mod = ines_transform.get_parameter_from_DB(source_db, 's_nom_mod', alt_ent_class_source)
-        s_nom_extendable = ines_transform.get_parameter_from_DB(source_db,"s_nom_extendable", alt_ent_class_source)
-
-        if s_nom_mod > 0:
-            unit_number = s_nom/s_nom_mod
-            max_units = s_nom_max/s_nom_mod
-            min_units = s_nom_min/s_nom_mod
-            capacity = s_nom_mod
-        elif s_nom > 0.0:
-            unit_number = 1
-            max_units = round(s_nom_max/s_nom,1)
-            min_units = round(s_nom_min/s_nom,1)
-            capacity = s_nom
-        else:
-            unit_number = 0
-            min_units = 0
-            max_units = s_nom_max
-            capacity = settings["Default_module_capacity"]
-
-        target_db = ines_transform.add_item_to_DB(target_db, 'capacity', alt_ent_class_target, capacity)
-        target_db = ines_transform.add_item_to_DB(target_db, 'links_existing', alt_ent_class_target, unit_number)
-        if min_units > 0.0:
-            target_db = ines_transform.add_item_to_DB(target_db, 'links_min_cumulative', alt_ent_class_target, min_units)
-        
-        if s_nom_extendable:
-            if isinstance(s_nom_max,float) and s_nom_max != math.inf:
-                value = 'cumulative_limits'
-                target_db = ines_transform.add_item_to_DB(target_db, 'links_max_cumulative', alt_ent_class_target, max_units)
-            else:
-                value = 'no_limits'
-        else:    
-            value = 'not_allowed'
-        target_db = ines_transform.add_item_to_DB(target_db, 'investment_method', alt_ent_class_target, value=value)
-
-        target_db = add_lifetime(source_db, target_db, alt_ent_class_source, alt_ent_class_target)
-        target_db = ines_transform.add_item_to_DB(target_db, "interest_rate", alt_ent_class_target, settings["Interest_rate"])
-        target_db = calculate_investment_cost(source_db, target_db, alt_ent_class_source, alt_ent_class_target)
-        target_db = add_entity_alternative(source_db, target_db, alt_ent_class_source, alt_ent_class_target)
-    
-    return target_db
-
-def add_store_capacities_and_lifetimes(source_db, target_db):
-    for source_entity in source_db.get_entity_items(entity_class_name='Store'):
-        alt_ent_class_source = [settings["Alternative"], source_entity["entity_byname"],'Store']
-        alt_ent_class_target = [settings["Alternative"], (source_entity["name"],),'node']
-
-        e_nom = ines_transform.get_parameter_from_DB(source_db, 'e_nom', alt_ent_class_source)
-        e_nom_max = ines_transform.get_parameter_from_DB(source_db, 'e_nom_max', alt_ent_class_source)
-        e_nom_min = ines_transform.get_parameter_from_DB(source_db, 'e_nom_min', alt_ent_class_source)
-        e_nom_mod = ines_transform.get_parameter_from_DB(source_db, 'e_nom_mod', alt_ent_class_source)
-        e_nom_extendable = ines_transform.get_parameter_from_DB(source_db,"e_nom_extendable", alt_ent_class_source)
-
-        if e_nom_mod > 0:
-            unit_number = e_nom/e_nom_mod
-            max_units = e_nom_max/e_nom_mod
-            min_units = e_nom_min/e_nom_mod
-            capacity = e_nom_mod
-        elif e_nom > 0.0:
-            unit_number = 1
-            max_units = round(e_nom_max/e_nom,1)
-            min_units = round(e_nom_min/e_nom,1)
-            capacity = e_nom
-        else:
-            unit_number = 0
-            min_units = 0
-            max_units = e_nom_max
-            capacity = settings["Default_module_capacity"]
-
-
-        target_db = ines_transform.add_item_to_DB(target_db, 'storage_capacity', alt_ent_class_target, capacity)
-        target_db = ines_transform.add_item_to_DB(target_db, 'storages_existing', alt_ent_class_target, unit_number)
-        if min_units > 0.0:
-            target_db = ines_transform.add_item_to_DB(target_db, 'storages_min_cumulative', alt_ent_class_target, min_units)
-        
-        if e_nom_extendable: 
-            if isinstance(e_nom_max,float) and e_nom_max != math.inf:
-                method = 'cumulative_limits'
-                target_db = ines_transform.add_item_to_DB(target_db, 'storages_max_cumulative', alt_ent_class_target, max_units)
-            else:
-                method = 'no_limits'
-        else:    
-            method = 'not_allowed'
-        
-        target_db = ines_transform.add_item_to_DB(target_db, 'storage_investment_method', alt_ent_class_target, method)
-
-        standing_loss = ines_transform.get_parameter_from_DB(source_db, 'standing_loss', alt_ent_class_source)
-        if standing_loss:
-            if standing_loss > 0:
-                target_db = ines_transform.add_item_to_DB(target_db, 'storage_loss_from_stored_energy', alt_ent_class_target, standing_loss)
-        target_db = add_storage_binding_and_fixing(source_db, target_db, alt_ent_class_source, alt_ent_class_target)
-        target_db = add_lifetime(source_db, target_db, alt_ent_class_source, alt_ent_class_target, storage = True)
-        target_db = ines_transform.add_item_to_DB(target_db, "storage_interest_rate", alt_ent_class_target, settings["Interest_rate"])
-        target_db = calculate_investment_cost(source_db, target_db, alt_ent_class_source, alt_ent_class_target, storage = True)
-        target_db = ines_transform.add_item_to_DB(target_db, "node_type", alt_ent_class_target, "storage")
-        target_db = add_entity_alternative(source_db, target_db, alt_ent_class_source, alt_ent_class_target)
-
-    return target_db
-
-# Binds investments for entities like storage and its input and output
-# All of the cost is added to only one of the entities, for others the investment cost is zero
-def bind_investments(source_db, target_db, alt_ent_class_source, investment_binding_map, storage = False):
-    if storage:
-        name_list =[]
-        directions = []
-        for i in investment_binding_map.keys():
-            if i != "storage":
-                directions.append(i)
-        for direction in directions:
-            constraint_name = alt_ent_class_source[1][0] + "_investment_bind_"+ direction
-            name_list.append(constraint_name)
-            alt_ent_class_constraint = [settings["Alternative"],(constraint_name,),'constraint']
-            ines_transform.assert_success(target_db.add_entity_item(
-                                entity_class_name="constraint",
-                                entity_byname=(constraint_name,),
-                            ), warn=True)
-            target_db = ines_transform.add_item_to_DB(target_db, "constant", alt_ent_class_constraint, value=0)
-            target_db = ines_transform.add_item_to_DB(target_db, "sense", alt_ent_class_constraint, value="equal")
-            for key, data in investment_binding_map.items():
-                if key == direction:
-                    output_map = api.Map([constraint_name], [data[1]], index_name="constraint")
-                    target_db = ines_transform.add_item_to_DB(target_db, "constraint_unit_count_coefficient", data[0], value = output_map)
-        for key, data in investment_binding_map.items():
-            if key == "storage":
-                output_map = api.Map(name_list, [data[1] for i in name_list], index_name="constraint")
-                target_db = ines_transform.add_item_to_DB(target_db, "constraint_storage_count_coefficient", data[0], value = output_map)
-    else:
-        constraint_name = alt_ent_class_source[1][0] + "_investment_bind"
-        alt_ent_class_constraint = [settings["Alternative"],(constraint_name,),'constraint']
-        ines_transform.assert_success(target_db.add_entity_item(
-                            entity_class_name="constraint",
-                            entity_byname=(constraint_name,),
-                        ), warn=True)
-        target_db = ines_transform.add_item_to_DB(target_db, "constant", alt_ent_class_constraint, value=0)
-        target_db = ines_transform.add_item_to_DB(target_db, "sense", alt_ent_class_constraint, value="equal")
-
-        for key, data in investment_binding_map.items():
-            output_map = api.Map([constraint_name], [data[1]], index_name="constraint")
-            target_db = ines_transform.add_item_to_DB(target_db, "constraint_unit_count_coefficient", data[0], value = output_map)
-    
-    return target_db
-
-def add_lifetime(source_db, target_db, alt_ent_class_source, alt_ent_class_target, storage = False):
-    target_param = 'lifetime'
-    method_param = 'retirement_method'
-    if storage:
-        target_param = 'storage_lifetime'
-        method_param = 'storage_retirement_method'
-    source_lifetime = ines_transform.get_parameter_from_DB(source_db, 'lifetime', alt_ent_class_source)
-    if source_lifetime and isinstance(source_lifetime, float) and source_lifetime != math.inf:
-        target_db = ines_transform.add_item_to_DB(target_db, target_param, alt_ent_class_target, value=source_lifetime)
-        target_db = ines_transform.add_item_to_DB(target_db, method_param, alt_ent_class_target, value='retire_as_scheduled')
-    elif source_lifetime and isinstance(source_lifetime, float) and source_lifetime == math.inf:
-        target_db = ines_transform.add_item_to_DB(target_db, target_param, alt_ent_class_target, value=settings["Infinite_lifetime"])
-        target_db = ines_transform.add_item_to_DB(target_db, method_param, alt_ent_class_target, value='retire_as_scheduled')
-    else:
-        target_db = ines_transform.add_item_to_DB(target_db, method_param, alt_ent_class_target, value='not_retired')
-    
-    return target_db
-
-def add_ramps(source_db,target_db, alt_ent_class_source, alt_ent_class_relationship_list):
-    ramp_limit_down = ines_transform.get_parameter_from_DB(source_db, "ramp_limit_down", alt_ent_class_source)
-    ramp_limit_up = ines_transform.get_parameter_from_DB(source_db, "ramp_limit_up", alt_ent_class_source)
-    for alt_ent_class_relationship in alt_ent_class_relationship_list:
-        if (not ramp_limit_down and not ramp_limit_up) or (math.isnan(ramp_limit_down) and math.isnan(ramp_limit_up)):
-            target_db = ines_transform.add_item_to_DB(target_db, "ramp_method", alt_ent_class_relationship, "no_constraint")
-        else:
-            target_db = ines_transform.add_item_to_DB(target_db, "ramp_method", alt_ent_class_relationship, "ramp_limit")
-            if ramp_limit_up and not math.isnan(ramp_limit_up):
-                target_db = ines_transform.add_item_to_DB(target_db, "ramp_limit_up", alt_ent_class_relationship, ramp_limit_up)
-            if ramp_limit_down and not math.isnan(ramp_limit_down):
-                target_db = ines_transform.add_item_to_DB(target_db, "ramp_limit_down", alt_ent_class_relationship, ramp_limit_down)
-    
-    return target_db        
-
-def add_profile_methods(target_db):
-    for classes in ["unit__to_node","node__to_unit"]:
-        for source_entity in target_db.get_entity_items(entity_class_name=classes):
-            alt_ent_class_target = [settings["Alternative"], source_entity["entity_byname"], classes]
-            upper_limit = ines_transform.get_parameter_from_DB(target_db, 'profile_limit_upper', alt_ent_class_target)
-            lower_limit = ines_transform.get_parameter_from_DB(target_db, 'profile_limit_lower', alt_ent_class_target)
-            upper = False
-            lower = False
-            if isinstance(upper_limit, api.TimeSeriesVariableResolution) or (isinstance(upper_limit, float) and upper_limit != 1.0):
-                upper = True
-            if isinstance(lower_limit, api.TimeSeriesVariableResolution) or (isinstance(lower_limit, float) and lower_limit > 0.0):
-                lower = True
-            if upper and lower:
-                profile_method = 'upper_and_lower_limit'
-            elif upper:
-                profile_method = 'upper_limit'
-            elif lower:
-                profile_method = 'lower_limit'
-            else:
-                profile_method = 'no_profile'
-
-            target_db = ines_transform.add_item_to_DB(target_db, "profile_method", alt_ent_class_target, profile_method) 
-    return target_db
-
-def add_inflow_methods_and_state_fix(target_db):
-    for target_entity in target_db.get_entity_items(entity_class_name='node'): 
-        alt_ent_class_source = [settings["Alternative"], target_entity["entity_byname"], 'node']
-        flow_profile = ines_transform.get_parameter_from_DB(target_db, "flow_profile",alt_ent_class_source)
-        flow_scaling_method = "no_inflow" 
-        if isinstance(flow_profile,api.TimeSeriesVariableResolution):
-            flow_scaling_method = "use_profile_directly"
-        elif isinstance(flow_profile,float):
-            if flow_profile > 0.0:
-                flow_scaling_method = "use_profile_directly"
-        target_db = ines_transform.add_item_to_DB(target_db, "flow_scaling_method", alt_ent_class_source, flow_scaling_method)
-
-        fix_limit = ines_transform.get_parameter_from_DB(target_db, "storage_state_fix", alt_ent_class_source)
-        upper_limit = ines_transform.get_parameter_from_DB(target_db, "storage_state_upper_limit", alt_ent_class_source)
-        lower_limit = ines_transform.get_parameter_from_DB(target_db, "storage_state_lower_limit", alt_ent_class_source)
-        fix = False
-        upper = False
-        lower = False
-        if isinstance(fix_limit, api.TimeSeriesVariableResolution) or (isinstance(fix_limit, float) and fix_limit != 1.0):
-            fix = True
-        if isinstance(upper_limit, api.TimeSeriesVariableResolution) or (isinstance(upper_limit, float) and upper_limit != 1.0):
-            upper = True
-        if isinstance(lower_limit, api.TimeSeriesVariableResolution) or (isinstance(lower_limit, float) and lower_limit != 1.0):
-            lower = True
-        if fix:
-            profile_method = 'fixed'
-        elif upper and lower:
-            profile_method = 'upper_and_lower_limit'
-        elif upper:
-            profile_method = 'upper_limit'
-        elif lower:
-            profile_method = 'lower_limit'
-        else:
-            profile_method = 'no_profile'
-        target_db = ines_transform.add_item_to_DB(target_db, "storage_limit_method", alt_ent_class_source, profile_method)
-    return target_db
-
-def add_storage_binding_and_fixing(source_db, target_db, alt_ent_class_source, alt_ent_class_target):        
-    if alt_ent_class_source[2] == 'Store':
-        bind_periodic = ines_transform.get_parameter_from_DB(source_db, "e_cyclic_per_period", alt_ent_class_source)
-        bind_solve = ines_transform.get_parameter_from_DB(source_db, "e_cyclic", alt_ent_class_source)
-        start_state = ines_transform.get_parameter_from_DB(source_db, "e_initial", alt_ent_class_source)
-        state_fix = None
-    elif alt_ent_class_source[2] == 'StorageUnit':
-        bind_periodic = ines_transform.get_parameter_from_DB(source_db, "cyclic_state_of_charge_per_period", alt_ent_class_source)
-        bind_solve = ines_transform.get_parameter_from_DB(source_db, "cyclic_state_of_charge", alt_ent_class_source)
-        start_state = ines_transform.get_parameter_from_DB(source_db, "state_of_charge_initial", alt_ent_class_source)
-        state_fix = ines_transform.get_parameter_from_DB(source_db, "state_of_charge_set", alt_ent_class_source)
-    if bind_periodic:
-        target_db = ines_transform.add_item_to_DB(target_db, "storage_state_binding_method", alt_ent_class_target, 'leap_over_within_period')
-    elif bind_solve:
-        target_db = ines_transform.add_item_to_DB(target_db, "storage_state_binding_method", alt_ent_class_target, 'leap_over_within_solve')
-    
-    if state_fix:
-        target_db = ines_transform.add_item_to_DB(target_db, "storage_state_fix_method", alt_ent_class_target, 'fix_all_timesteps')
-        target_db = ines_transform.add_item_to_DB(target_db, "storage_state_fix", alt_ent_class_target, state_fix)
-
-    if start_state and not bind_solve:
-        target_db = ines_transform.add_item_to_DB(target_db, "storage_state_fix_method", alt_ent_class_target, 'fix_start')
-        target_db = ines_transform.add_item_to_DB(target_db, "storage_state_fix", alt_ent_class_target, state_fix)
-
-    return target_db 
-
-#This is slightly problematic. Both investment cost and interest rate produced are wrong, but combinend they will produce the correct annuity
-#the captial cost of PyPSA is really the annuity
-def calculate_investment_cost(source_db, target_db, alt_ent_class_source, alt_ent_class_target, storage = False, max_hours = None):
-    capital_cost = ines_transform.get_parameter_from_DB(source_db, "capital_cost", alt_ent_class_source)
-    if max_hours: 
-        capital_cost = capital_cost * 1/max_hours
-    lifetime = ines_transform.get_parameter_from_DB(source_db, "lifetime", alt_ent_class_source)
-    if lifetime and isinstance(lifetime, float) and lifetime == math.inf:
-        lifetime = settings["Infinite_lifetime"]
-    r = settings["Interest_rate"]
-    investment_cost = capital_cost /(r /(1 - (1 / (1+r))**lifetime))
-    if storage:
-        target_db = ines_transform.add_item_to_DB(target_db, "storage_investment_cost", alt_ent_class_target, investment_cost)
-    else: 
-        target_db = ines_transform.add_item_to_DB(target_db, "investment_cost", alt_ent_class_target, investment_cost)
-
-    return target_db
-    
-def add_node_types(target_db):
-    for target_entity in target_db.get_entity_items(entity_class_name='node'): 
-        alt_ent_class_source = [settings["Alternative"], target_entity["entity_byname"], 'node']
-        node_type = ines_transform.get_parameter_from_DB(target_db, "node_type",alt_ent_class_source)
-        if not node_type:
-            target_db = ines_transform.add_item_to_DB(target_db, "node_type", alt_ent_class_source, "balance")
-
-    return target_db
-
-def add_entity_alternative(source_db, target_db, alt_ent_class_source, alt_ent_class_target):
-    active =  ines_transform.get_parameter_from_DB(source_db, "active", alt_ent_class_source)
-    if isinstance(active, bool):
-        ines_transform.assert_success(target_db.add_update_entity_alternative_item(
-                    entity_class_name= alt_ent_class_target[2],
-                    entity_byname= alt_ent_class_target[1],
-                    alternative_name= alt_ent_class_target[0],
-                    active=active,
-                ))
-    return target_db
-
-def add_entity_alternative_items(target_db):
-    for entity_class in target_db.get_entity_class_items():
-        for entity in target_db.get_entity_items(entity_class_name=entity_class["name"]):
-            item = target_db.get_entity_alternative_item(
-                entity_class_name=entity_class["name"],
-                entity_byname=entity["entity_byname"],
-                alternative_name=settings["Alternative"],
+    def build_links(self):
+        for ln in self.d.names("Link"):
+            ports = self.ports("Link", ln)
+            pmin, pmax = self.d.get("Link", ln, "p_min_pu"), self.d.get("Link", ln, "p_max_pu")
+            symmetric = (
+                len(ports) == 2 and is_number(pmin) and is_number(pmax) and pmax > 0
+                and abs(pmin + pmax) < 1e-12 and is_number(ports[1][1])
+                and not bool(self.d.get("Link", ln, "committable"))
             )
-            if not item:
-                ines_transform.assert_success(target_db.add_update_entity_alternative_item(
-                    entity_class_name=entity_class["name"],
-                    entity_byname=entity["entity_byname"],
-                    alternative_name=settings["Alternative"],
-                    active=True,
-                ))
-    return target_db
-
-#PyPSA earth produces same name entities for bus, store, generator and link for example in csp...
-def change_same_name_entities(target_db):
-    entity_name_list = []
-    for entity_class in target_db.get_entity_class_items():
-        for entity in target_db.get_entity_items(entity_class_name=entity_class["name"]): 
-            if entity["name"] in entity_name_list:
-                target_db.update_item(
-                    "entity", id=entity["id"], name=entity["name"]+"_"+entity_class["name"]
-                )
+            if symmetric:
+                self.link_as_link(ln, ports, pmax)
             else:
-                entity_name_list.append(entity["name"])
-    return target_db
-    
-if __name__ == "__main__":
-    developer_mode = False
-    if developer_mode:
-        # save entities to yaml file
-        save_folder = os.path.dirname(__file__)
-        conversion_configuration(conversions = [save_folder+'/pypsa_to_ines_entities.yaml', save_folder+'/pypsa_to_ines_parameters.yaml', save_folder+'/pypsa_to_ines_parameter_methods.yaml',
-                                             save_folder+'/pypsa_to_ines_parameters_to_relationships.yaml'], overwrite=True)
-    else:
-        # assume the file to be used inside of Spine Toolbox
-        url_db_in = sys.argv[1]
-        url_db_out = sys.argv[2]
-        settings_path = 'pypsa_to_ines_settings.yaml'
-        # open yaml files
-        entities_to_copy,parameter_transforms,parameter_methods, parameters_to_relationships, parameters_to_parameters = conversion_configuration()
-        with open(settings_path,'r') as file:
-            settings = yaml.safe_load(file) 
+                u, ref_flow, res = self.multiport_unit("Link", ln, ports)
+                if self._has_negative(pmin):
+                    self.reverse_unit(ln, ports, pmin, res, u)
 
-        main()
+    def link_as_link(self, ln, ports, pmax):
+        (bus0, _), (bus1, eff) = ports
+        link = self.ent("link", self.unique("link", ln, "Link"))
+        lname = link[1][0]
+        nln = self.ent("node__link__node", bus0, lname, bus1)
+        self.flow_carrier(nln, bus0)
+        carrier = self.carrier_member("Link", ln, self.membership_class("Link", "link"), lname)
+        if carrier:
+            self.carrier_links[carrier].append((link, bus0, bus1, self.d.get("Link", ln, "p_nom_extendable")))
+        res = self.capacity("Link", ln, "p_nom")
+        self.put(link, "capacity", res["cap"])
+        self.put_counts(link, res, "link")
+        self.investment("Link", ln, link, link)
+        mc = self.d.value("Link", ln, "marginal_cost")
+        lossy = abs(float(eff) - 1.0) > 1e-12
+        key = ("lossy" if lossy else "lossless") + ("_with_cost" if mc is not None else "_no_cost")
+        self.put(link, "transfer_method", self.methods["link_transfer"]["to_ines"][key])
+        if lossy:
+            self.put(link, "efficiency", float(eff))
+            self.report.note(f"Link {ln}: two-way PyPSA link with efficiency {eff}; PyPSA applies it as p1 = -efficiency * p0 in both directions, INES as a loss in both directions.")
+        if mc is not None:
+            self.report.note(f"Link {ln}: PyPSA marginal_cost is negative for the reverse flow, INES operational_cost applies to both directions.")
+        if pmax != 1.0:
+            self.put(link, "availability", float(pmax))
+        self.d.mark("Link", ln, "p_min_pu", "p_max_pu", "efficiency")
+        self.apply_direct("Link", ln, {"link": link, "link_flow": nln})
+        self.active("Link", ln, link, nln)
+
+    @staticmethod
+    def _mean(v):
+        return float(v.mean()) if isinstance(v, pd.Series) else float(v)
+
+    @staticmethod
+    def _has_negative(v):
+        if isinstance(v, pd.Series):
+            return bool((v < 0).any())
+        return is_number(v) and v < 0
+
+    def multiport_unit(self, comp, name, ports):
+        """INES unit for a Link / Process. ports: (bus, coefficient per unit of activity), negative = input."""
+        u = self.ent("unit", self.unique("unit", name, comp))
+        uname = u[1][0]
+        ref_i = next((i for i, (_, c) in enumerate(ports) if self._mean(c) < 0), 0)
+        ref_bus, ref_coef = ports[ref_i]
+        scale = abs(self._mean(ref_coef)) or 1.0
+        if isinstance(ref_coef, pd.Series) and not np.allclose(ref_coef.values, ref_coef.values[0]):
+            self.report.note(f"{comp} {name}: time-varying coefficient of the reference port {ref_bus} averaged.")
+        ref_in = self._mean(ref_coef) < 0
+        ref_flow = self.ent("node__to_unit", ref_bus, uname) if ref_in else self.ent("unit__to_node", uname, ref_bus)
+        self.flow_carrier(ref_flow, ref_bus)
+        carrier = self.carrier_member(comp, name, self.membership_class(comp, "unit"), uname)
+        if carrier:
+            self.carrier_flows[carrier].append((ref_flow, ref_bus, self.d.get(comp, name, "p_nom_extendable")))
+        res = self.capacity(comp, name, "p_nom")
+        self.put(ref_flow, "capacity", res["cap"] * scale)
+        self.put_counts(u, res, "unit")
+        self.investment(comp, name, u, ref_flow, scale=scale)
+        self.committable(comp, name, u)
+        self.apply_direct(comp, name, {"unit": u, "flow": ref_flow})
+        mc = self.d.value(comp, name, "marginal_cost")
+        if mc is not None:
+            self.put(ref_flow, "other_operational_cost", self.iv(mc / scale))
+        pmax = self.d.value(comp, name, "p_max_pu")
+        if pmax is not None:
+            self.put(ref_flow, "profile_limit_upper", self.iv(pmax.clip(lower=0) if isinstance(pmax, pd.Series) else max(pmax, 0.0)))
+        pmin = self.d.get(comp, name, "p_min_pu")
+        if (isinstance(pmin, pd.Series) and (pmin > 0).any()) or (is_number(pmin) and pmin > 0):
+            self.put(ref_flow, "profile_limit_lower", self.iv(pmin.clip(lower=0) if isinstance(pmin, pd.Series) else pmin))
+        self.fixed_profile(comp, name, "p_set", ref_flow, res)
+        main_done = not ref_in
+        seen = {(ref_flow[0], ref_bus)}
+        for i, (bus, coef) in enumerate(ports):
+            if i == ref_i:
+                continue
+            out = self._mean(coef) >= 0
+            flow_cls = "unit__to_node" if out else "node__to_unit"
+            if (flow_cls, bus) in seen:
+                self.report.skip(f"{comp}.bus{i}", [name], "INES has one flow per unit and node in each direction; this port repeats a node.")
+                continue
+            seen.add((flow_cls, bus))
+            flow = self.ent(flow_cls, uname, bus) if out else self.ent(flow_cls, bus, uname)
+            self.flow_carrier(flow, bus)
+            ratio = coef.abs() / scale if isinstance(coef, pd.Series) else abs(float(coef)) / scale
+            if out and not main_done:
+                self.put(u, "conversion_method", "constant_efficiency")
+                self.put(u, "efficiency", self.iv(ratio))
+                main_done = True
+                continue
+            self.put(flow, "conversion_coefficient", 0.0)
+            uf = self.ent("unit_flow__unit_flow", *flow[1], *ref_flow[1])
+            self.put(uf, "equality_ratio", self.iv(ratio))
+        self.active(comp, name, u, ref_flow)
+        return u, ref_flow, res
+
+    def reverse_unit(self, ln, ports, pmin, res, u):
+        """Unit for the bus1 -> bus0 direction of a Link with negative p_min_pu."""
+        (bus0, _), (bus1, eff) = ports[0], ports[1]
+        rname = self.unique("unit", ln + self.cfg["Link"].get("reverse_unit_suffix", "_reverse"), "Link")
+        ur = self.ent("unit", rname)
+        fin = self.ent("node__to_unit", bus1, rname)
+        fout = self.ent("unit__to_node", rname, bus0)
+        self.flow_carrier(fin, bus1)
+        self.flow_carrier(fout, bus0)
+        self.put(fout, "capacity", res["cap"])
+        self.put_counts(ur, res, "unit")
+        upper = (-pmin).clip(lower=0) if isinstance(pmin, pd.Series) else max(-pmin, 0.0)
+        self.put(fout, "profile_limit_upper", self.iv(upper))
+        self.put(ur, "conversion_method", "constant_efficiency")
+        self.put(ur, "efficiency", self.iv(1.0 / eff))
+        mc = self.d.value("Link", ln, "marginal_cost")
+        if mc is not None:
+            self.put(fout, "other_operational_cost", self.iv(-mc))
+        for p in ("lifetime", "retirement_method"):
+            self.put(ur, p, self.got(u, p))
+        if res["ext"]:
+            self.put(ur, "investment_method", res["method"])
+            self.bind_counts(ln + self.cfg["Link"].get("bind_constraint_suffix", "_bind"),
+                             [(u, "constraint_unit_count_coefficient", 1.0), (ur, "constraint_unit_count_coefficient", -1.0)])
+        if len(ports) > 2:
+            self.report.note(f"Link {ln}: the reverse direction unit only has bus1 -> bus0; further ports apply to the forward direction only.")
+        self.active("Link", ln, ur, fin, fout)
+
+    def build_processes(self):
+        if "Process" not in self.n.all_components:
+            return
+        for pr in self.d.names("Process"):
+            self.multiport_unit("Process", pr, self.ports("Process", pr))
+            if self._has_negative(self.d.get("Process", pr, "p_min_pu")):
+                self.report.skip("Process.p_min_pu", [pr], "A negative activity of a Process is not transformed.")
+
+    # ------------------------------------------------------------ storage
+    def storage_state(self, comp, name, node, total_energy):
+        g = lambda a: self.d.get(comp, name, a)
+        if comp == "Store":
+            cyclic, per_period, initial, fix = g("e_cyclic"), g("e_cyclic_per_period"), g("e_initial"), "e_set"
+        else:
+            cyclic, per_period, initial, fix = g("cyclic_state_of_charge"), g("cyclic_state_of_charge_per_period"), g("state_of_charge_initial"), "state_of_charge_set"
+        cyc = self.methods["storage_cycling"]["to_ines"]
+        multi = len(self.period_names) > 1
+        if per_period and multi:
+            self.put(node, "storage_state_binding_method", cyc["cyclic_per_period"])
+        elif cyclic:
+            self.put(node, "storage_state_binding_method", cyc["cyclic"])
+        else:
+            self.put(node, "storage_state_binding_method", cyc["not_cyclic"])
+        fixed = self.d.value(comp, name, fix)
+        if fixed is not None and total_energy > 0:
+            self.put(node, "storage_state_fix", self.iv(fixed / total_energy))
+            self.put(node, "storage_state_fix_method", "fix_all_timesteps")
+            return
+        if fixed is not None:
+            self.d.used.discard((comp, name, fix))
+        if cyclic or (per_period and multi):
+            return
+        initial = float(initial or 0.0)
+        if initial == 0.0:
+            self.put(node, "storage_state_fix", 0.0)
+        elif total_energy > 0:
+            self.put(node, "storage_state_fix", initial / total_energy)
+        else:
+            self.report.skip(f"{comp}.{'e_initial' if comp == 'Store' else 'state_of_charge_initial'}", [name],
+                             "An initial state in MWh cannot be given relative to an extendable storage.")
+            return
+        self.put(node, "storage_state_fix_method", "fix_start")
+
+    def build_stores(self):
+        by_bus = defaultdict(list)
+        for s in self.d.names("Store"):
+            by_bus[self.d.get("Store", s, "bus")].append(s)
+        merge = self.s.get("Merge_single_store_into_bus", True)
+        for s in self.d.names("Store"):
+            bus = self.d.get("Store", s, "bus")
+            if merge and len(by_bus[bus]) == 1 and bus not in self.storage_nodes:
+                node = ("node", (bus,))
+                if s != bus:
+                    self.report.note(f"Store {s} was merged into its bus node {bus}.")
+            else:
+                node = self.ent("node", self.unique("node", s, "Store"))
+                link = self.ent("link", self.unique("link", s + self.cfg["Store"].get("connection_link_suffix", "_connection"), "Store"))
+                self.ent("node__link__node", bus, link[1][0], node[1][0])
+                self.put(link, "transfer_method", "no_losses_no_cost")
+                self.put(link, "capacity", float(self.s.get("Unlimited_capacity", 1e6)))
+                self.put(link, "links_existing", 1.0)
+                self.put(link, "investment_method", "not_allowed")
+                self.active("Store", s, link)
+            self.storage_nodes.add(node[1][0])
+            self.put(node, "node_type", "storage")
+            res = self.capacity("Store", s, "e_nom")
+            self.put(node, "storage_capacity", res["cap"])
+            self.put_counts(node, res, "storage")
+            self.investment("Store", s, node, node, storage=True)
+            self.apply_direct("Store", s, {"storage": node})
+            self.storage_state("Store", s, node, res["existing"] * res["cap"])
+            self.carrier_member("Store", s, self.membership_class("Store"), node[1][0])
+            self.active("Store", s, node)
+
+    def link_can_hold(self, su):
+        """True when a two-way INES link can carry the StorageUnit's charge and discharge limits and costs."""
+        pmin, pmax = self.d.raw("StorageUnit", su, "p_min_pu"), self.d.raw("StorageUnit", su, "p_max_pu")
+        if any(self.d.value("StorageUnit", su, a) is not None for a in ("marginal_cost", "p_dispatch_set", "p_store_set")):
+            return False
+        no_charge = (isinstance(pmin, pd.Series) and np.allclose(pmin.values, 0)) or (is_number(pmin) and pmin == 0)
+        if no_charge:
+            return True
+        if isinstance(pmin, pd.Series) or isinstance(pmax, pd.Series):
+            a = pmin.values if isinstance(pmin, pd.Series) else np.full(len(self.stamps), pmin)
+            b = pmax.values if isinstance(pmax, pd.Series) else np.full(len(self.stamps), pmax)
+            return bool(np.allclose(a, -b))
+        return abs(pmin + pmax) < 1e-12
+
+    def build_storage_units(self):
+        cfg = self.cfg["StorageUnit"]
+        for su in self.d.names("StorageUnit"):
+            g = lambda a: self.d.get("StorageUnit", su, a)
+            bus = g("bus")
+            node = self.ent("node", self.unique("node", su, "StorageUnit"))
+            nname = node[1][0]
+            self.storage_nodes.add(nname)
+            self.put(node, "node_type", "storage")
+            res = self.capacity("StorageUnit", su, "p_nom")
+            max_hours = float(g("max_hours"))
+            self.put(node, "storage_capacity", res["cap"] * max_hours)
+            self.put_counts(node, res, "storage")
+            if self.s.get("Storage_unit_as_link", True) and self.link_can_hold(su):
+                power = self.storage_unit_link(su, bus, node, res)
+                members = [(self.membership_class("StorageUnit", "link"), power)]
+            else:
+                power, members = self.storage_unit_units(su, bus, node, res)
+            for p in ("lifetime", "retirement_method", "commission_date"):
+                self.put(node, f"storage_{p}", self.got(power, p))
+            suffix = cfg.get("energy_to_power_constraint_suffix", "_energy_to_power")
+            for i, (_, e) in enumerate(members):
+                coef = "constraint_link_count_coefficient" if e[0] == "link" else "constraint_unit_count_coefficient"
+                self.bind_counts(su + suffix + ("" if i == 0 else f"_{i + 1}"),
+                                 [(e, coef, 1.0), (node, "constraint_storage_count_coefficient", -1.0)])
+            self.apply_direct("StorageUnit", su, {"storage": node})
+            inflow = self.d.value("StorageUnit", su, "inflow")
+            if inflow is not None:
+                self.put(node, "flow_profile", self.iv(inflow))
+                self.put(node, "flow_scaling_method", "use_profile_directly")
+                self.put(node, "spill_upper_limit", self.iv(inflow))
+            self.storage_state("StorageUnit", su, node, res["existing"] * res["cap"] * max_hours)
+            if self.carrier_member("StorageUnit", su, self.membership_class("StorageUnit", "node"), nname):
+                for cls, ent in members:
+                    self.carrier_member("StorageUnit", su, cls, ent[1][0])
+            self.active("StorageUnit", su, node, *[m for _, m in members])
+
+    def storage_unit_link(self, su, bus, node, res):
+        """Two-way link bus <-> storage node; its count is tied to the storage count by a constraint."""
+        g = lambda a: self.d.get("StorageUnit", su, a)
+        link = self.ent("link", self.unique("link", su, "StorageUnit"))
+        lname, nname = link[1][0], node[1][0]
+        pmin, pmax = g("p_min_pu"), g("p_max_pu")
+        e_store, e_dispatch = g("efficiency_store"), g("efficiency_dispatch")
+        two_way = self._has_negative(pmin)
+        is_one = lambda v: is_number(v) and abs(v - 1.0) < 1e-12
+        transfer = self.methods["link_transfer"]["to_ines"]
+        if two_way:
+            nln = self.ent("node__link__node", bus, lname, nname)
+            if not is_one(e_store):
+                self.put(nln, "efficiency", self.iv(e_store))
+            if not is_one(e_dispatch):
+                self.put(link, "efficiency", self.iv(e_dispatch))
+            lossless = is_one(e_store) and is_one(e_dispatch)
+            self.put(link, "transfer_method", transfer["lossless_no_cost" if lossless else "lossy_with_cost"])
+        else:
+            nln = self.ent("node__link__node", nname, lname, bus)
+            if not is_one(e_dispatch):
+                self.put(nln, "efficiency", self.iv(e_dispatch))
+            self.put(link, "transfer_method", self.methods["link_transfer"]["one_way"][0])
+        self.flow_carrier(nln, bus)
+        if not (is_number(pmax) and pmax == 1.0):
+            self.put(link, "availability", self.iv(pmax))
+        self.put(link, "capacity", res["cap"])
+        self.put_counts(link, res, "link")
+        self.investment("StorageUnit", su, link, link)
+        self.d.mark("StorageUnit", su, "p_min_pu", "p_max_pu", "efficiency_store", "efficiency_dispatch", "marginal_cost",
+                    "p_dispatch_set", "p_store_set")
+        return link
+
+    def storage_unit_units(self, su, bus, node, res):
+        """Charge and discharge units, for limits a two-way link cannot hold (asymmetric profiles, dispatch cost, set points)."""
+        cfg = self.cfg["StorageUnit"]
+        g = lambda a: self.d.get("StorageUnit", su, a)
+        nname = node[1][0]
+        cls_unit = self.membership_class("StorageUnit", "unit")
+        ud = self.ent("unit", self.unique("unit", su + cfg.get("discharge_suffix", "_discharge"), "StorageUnit"))
+        self.ent("node__to_unit", nname, ud[1][0])
+        d_out = self.ent("unit__to_node", ud[1][0], bus)
+        self.flow_carrier(d_out, bus)
+        self.put(d_out, "capacity", res["cap"])
+        self.put_counts(ud, res, "unit")
+        self.put(ud, "conversion_method", "constant_efficiency")
+        self.investment("StorageUnit", su, ud, d_out)
+        roles = {"discharge": ud, "discharge_flow": d_out}
+        members = [(cls_unit, ud)]
+        pmin = g("p_min_pu")
+        if self._has_negative(pmin):
+            uc = self.ent("unit", self.unique("unit", su + cfg.get("charge_suffix", "_charge"), "StorageUnit"))
+            c_in = self.ent("node__to_unit", bus, uc[1][0])
+            self.ent("unit__to_node", uc[1][0], nname)
+            self.flow_carrier(c_in, bus)
+            self.put(c_in, "capacity", res["cap"])
+            self.put_counts(uc, res, "unit")
+            self.put(uc, "conversion_method", "constant_efficiency")
+            for p in ("lifetime", "retirement_method", "commission_date"):
+                self.put(uc, p, self.got(ud, p))
+            upper = (-pmin).clip(lower=0) if isinstance(pmin, pd.Series) else -pmin
+            if not (is_number(upper) and upper == 1.0):
+                self.put(c_in, "profile_limit_upper", self.iv(upper))
+            roles.update({"charge": uc, "charge_flow": c_in})
+            members.append((cls_unit, uc))
+            self.fixed_profile("StorageUnit", su, "p_store_set", c_in, res)
+        else:
+            self.d.mark("StorageUnit", su, "efficiency_store")
+        self.fixed_profile("StorageUnit", su, "p_dispatch_set", d_out, res)
+        self.apply_direct("StorageUnit", su, roles)
+        self.report.note(f"StorageUnit {su}: charge and discharge units used (asymmetric limits, dispatch cost or set points); ines_to_pypsa.py returns a Store and Links.")
+        return ud, members
+
+    # ------------------------------------------------------------ global constraints
+    def build_global_constraints(self):
+        senses = self.methods["global_constraint_sense"]["to_ines"]
+        for gc in self.d.names("GlobalConstraint"):
+            g = lambda a: self.d.get("GlobalConstraint", gc, a)
+            typ, attr, sense, const, period, bus = g("type"), g("carrier_attribute"), g("sense"), g("constant"), g("investment_period"), g("bus")
+            sense = senses.get(sense)
+            bus = None if (bus is None or isnull(bus) or bus == "") else bus
+            per = str(int(period)) if finite(period) else None
+
+            def value_for(v):
+                return Map([per], [float(v)], index_name="period") if per else float(v)
+
+            if typ == "primary_energy" and attr == "co2_emissions":
+                if sense != "less_than":
+                    self.report.skip("GlobalConstraint.sense", [gc], "INES has only upper limits for CO2.")
+                    continue
+                s = self.ent("set", self.unique("set", gc, "GlobalConstraint"))
+                for fuel in self.fuel_node.values():
+                    self.ent("set__node", s[1][0], fuel)
+                if self.s.get("Annualize_periods", True):
+                    const = float(const) / self.nyears
+                    if abs(self.nyears - 1.0) > 1e-6:
+                        self.report.note(f"GlobalConstraint {gc}: CO2 limit divided by the modelled years ({self.nyears:.4g}) because INES periods are scaled to a year (Annualize_periods).")
+                self.put(s, "co2_max_period" if per else "co2_max_cumulative", value_for(const))
+                if any(self.d.get(c, x, "carrier") in self.fuel_node for c in ("Store", "StorageUnit") for x in self.d.names(c)):
+                    self.report.note(f"GlobalConstraint {gc}: emissions from stores and storage units of carriers with co2_emissions are not counted in INES.")
+            elif typ in ("tech_capacity_expansion_limit", "operational_limit"):
+                members = [f for f in self.carrier_flows.get(attr, []) if bus is None or f[1] == bus]
+                links = [ln for ln in self.carrier_links.get(attr, []) if bus is None or bus in (ln[1], ln[2])]
+                if typ == "operational_limit":
+                    links = []
+                    members = [f for f in members if f[0][0] == "unit__to_node"]
+                if not members and not links:
+                    self.report.skip(f"GlobalConstraint.{typ}", [gc], f"No INES flows with carrier {attr}.")
+                    continue
+                s = self.ent("set", self.unique("set", gc, "GlobalConstraint"))
+                for flow, _, _ in members:
+                    self.ent("set__unit_flow", s[1][0], *flow[1])
+                for link, _, _, _ in links:
+                    self.ent("set__link", s[1][0], link[1][0])
+                if typ == "tech_capacity_expansion_limit":
+                    names = {"less_than": ["max_cumulative"], "greater_than": ["min_cumulative"], "equal": ["max_cumulative", "min_cumulative"]}
+                    for p in names[sense]:
+                        self.put(s, p, value_for(const))
+                    if any(not bool(m[-1]) for m in members + links):
+                        self.report.note(f"GlobalConstraint {gc}: PyPSA limits only extendable capacity, INES max/min_cumulative include existing capacity of non-extendable members.")
+                else:
+                    names = {"less_than": ["flow_max_cumulative"], "greater_than": ["flow_min_cumulative"], "equal": ["flow_max_cumulative", "flow_min_cumulative"]}
+                    hours = self.total_hours / max(len(self.period_names), 1)
+                    for p in names[sense]:
+                        self.put(s, p, value_for(float(const) / hours))
+            else:
+                self.report.skip(f"GlobalConstraint.{typ}", [gc])
+
+    # ------------------------------------------------------------ finishing
+    def finalize(self):
+        for cls in FLOW_CLASSES:
+            for (c, byname) in list(self.entities):
+                if c != cls:
+                    continue
+                ent = (c, byname)
+                up, lo, fix = (self.got(ent, p) is not None for p in ("profile_limit_upper", "profile_limit_lower", "profile_fix"))
+                if fix:
+                    self.put(ent, "profile_method", "fixed")
+                elif up and lo:
+                    self.put(ent, "profile_method", "upper_and_lower_limit")
+                elif up:
+                    self.put(ent, "profile_method", "upper_limit")
+                elif lo:
+                    self.put(ent, "profile_method", "lower_limit")
+        for (c, byname) in list(self.entities):
+            ent = (c, byname)
+            if c in FLOW_CLASSES + ("node__link__node",):
+                if self.got(ent, "ramp_limit_up") is not None or self.got(ent, "ramp_limit_down") is not None:
+                    self.put(ent, "ramp_method", "ramp_limit")
+            if c == "node" and self.got(ent, "node_type") == "storage":
+                up = self.got(ent, "storage_state_upper_limit") is not None
+                lo = self.got(ent, "storage_state_lower_limit") is not None
+                method = "upper_and_lower_limit" if up and lo else "upper_limit" if up else "lower_limit" if lo else "no_profile"
+                self.put(ent, "storage_limit_method", method)
+
+    def report_unused(self):
+        for (c, attr), names in sorted(self.d.unused(HANDLED_COMPONENTS).items()):
+            self.report.skip(f"{c}.{attr}", names)
+        for comp in self.cfg.get("not_transformed_components", []):
+            if comp in self.n.all_components and not self.d.static(comp).empty:
+                self.report.skip(comp, self.d.names(comp))
+        for comp in ("LineType", "TransformerType"):
+            owner = "Line" if comp == "LineType" else "Transformer"
+            used = {t for t in self.d.static(owner)["type"] if t} if not self.d.static(owner).empty else set()
+            if used:
+                self.report.skip(comp, sorted(used), "Standard types (impedances) are not in INES.")
+
+
+def default_report_path(output):
+    if "://" in output:
+        return os.path.join(os.getcwd(), "pypsa_to_ines_report.md")
+    return os.path.splitext(output)[0] + "_report.md"
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("input", help="PyPSA .nc / .h5 file, csv folder, or Spine DB with PyPSA classes")
+    parser.add_argument("output", help="INES sqlite file, sqlite url or .json file")
+    parser.add_argument("--report", help="Markdown report of what was not transformed")
+    args = parser.parse_args(argv)
+
+    mapping = load_mapping()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        n = load_network(args.input)
+    source_name = os.path.basename(args.input.rstrip("/\\"))
+    report = Report(f"PyPSA to INES: {source_name}", mapping["parameters"]["not_transformed_reasons"]["pypsa"])
+    conv = PypsaToInes(n, mapping, report)
+    conv.run()
+    settings = mapping["settings"]
+    write_ines(
+        args.output,
+        list(conv.entities.keys()),
+        [(c, b, p, v) for (c, b, p), v in conv.values.items()],
+        alternative=settings.get("Alternative", "PyPSA"),
+        scenario=settings.get("Scenario", "PyPSA"),
+        entity_alternatives=conv.inactive,
+    )
+    report_path = args.report or default_report_path(args.output)
+    report.write(report_path)
+    print(f"Wrote INES data to {args.output}")
+    report.print_summary()
+    print(f"Report: {report_path}")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
