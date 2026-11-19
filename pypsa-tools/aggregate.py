@@ -5,9 +5,9 @@ import json
 import numpy as np
 import matplotlib.pyplot as plt
 
-#ARGS = sys.argv[1:]
-inputpath = "/home/u0102409/OneDrive_KUL/Mopo/spinefiles/workflow/data/elec.json" #ARGS[0] # json file
-outputpath = "/home/u0102409/OneDrive_KUL/Mopo/WP2/Data structure/external data/PyPSA/processed/elec_agg.json" #ARGS[1] # json file
+ARGS = sys.argv[1:]
+inputpath = ARGS[0] # path to original json file
+outputpath = ARGS[1] # path to aggregated json file
 
 with open(inputpath, 'r') as f:
     inputdata=json.load(f)
